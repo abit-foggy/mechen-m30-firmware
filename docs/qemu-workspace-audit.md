@@ -504,6 +504,57 @@ after that fix was then characterised end to end, via the HMP monitor and
    MIPS16e at `0xBFC045F4` and `0xBFC033D4`. Nothing in the currently-placed
    component set covers that span.
 
+#### Where that code is *not* (2026-11-11, second pass)
+
+The source of the `0xBFC04xxx`–`0xBFC08xxx` MIPS16e region was searched for
+across every unpacked component, every boot blob and every bank declaration:
+
+- **`ker_text.bin` and `kernel.drv`'s resident body are the same module.**
+  `ker_text.bin` is byte-identical to `kernel.drv[0x200:0xD00]` plus 0x100 zero
+  bytes. Placing them at two different addresses is therefore wrong, and the
+  module's own header triple (`+0x08/+0x0c/+0x10` = 0x200 / 0xB00 / 0xBFC08000)
+  says where it belongs: `0xBFC08000`.
+- **That module holds no MIPS32 code at all** — zero `jr $ra` and zero `eret`
+  — so it is a pure pointer table (80 pointers, 50 of them odd = MIPS16e,
+  spanning `0xBFC04391`–`0xBFC08845`). `kernel.drv` as a whole also holds zero
+  of both markers, so no part of it can be relocated into the hole.
+- **Only `ker_init.bin` (7 markers) and `ker_xsys.bin` (1 each of `jr $ra` and
+  `eret`) contain MIPS32 code.** `upgrade.ap` and `adhifi.al` contain code too
+  but are app/DSP blobs, not kernel.
+- **`NORHWSC.BIN` (2048 bytes, 8 `jr $ra`) and `NORFWSC.BIN` (10752 bytes, 6
+  `jr $ra`) are the only boot-stage code, and they are two different stages.**
+  `NORHWSC.BIN` begins with the *same* prologue as KER_INIT
+  (`addiu sp,sp,-24; sw ra,20(sp); sw s8,16(sp); move s8,sp`) and does register
+  read-modify-writes with delay loops at `0xC0100000`/`0xC012001C`, writing an
+  `"HW"` marker at `0x9FC24008` — hardware init. `NORFWSC.BIN` instead carries
+  `"checksum"`, `"head sum"`, `"param sector"`, `"usb_sn: "` — the USB /
+  firmware-upgrade path. **The AFI directory gives both the same load address,
+  `0xBFC1E000`, and directory order lets the upgrade blob overwrite the boot
+  stage.** Entering `NORHWSC` at `0xBFC1E000` does execute its own functions
+  (59 TBs across `0xBFC1E000`–`0xBFC1E5B4`) but it runs past its own 0x800
+  bytes into `NORFWSC`'s region and faults with ExcCode 7 (DBE) at
+  `0xBFC1EF63`, so it does not fill the hole either.
+- **`NORBREC.BIN` is a boot record, and its layout is now partly decoded.**
+  It carries a filename table — `KER_TEXTBIN` @0xAFC, `KER_DATABIN` @0xB08,
+  `KER_INITBIN` @0xB14, `KER_XSYSBIN` @0xB20, each `\0`-terminated — followed
+  immediately by an address array @0xB2C: `0x9fc12000, 0xbfc10138,
+  0xbfc02600, 0xbfc08000, 0x9fc1a400, 0xbfc32000, 0xbfc19580`. Two of those
+  are already confirmed placements (`0xBFC08000` = kernel.drv resident,
+  `0x9FC1A400` = its data). The records before the filename table embed the
+  same addresses as 32-bit values (e.g. `0x9FC27000`, `0xBFC02600`,
+  `0xBFC10138` at +0xA60). `NORBREC.BIN` itself contains no code markers.
+- **All 443 bank triples across every `.ap`/`.drv` load into
+  `0x40000000`–`0x48D14600`; none into `0xBFC04xxx`.** The `.sty` files declare
+  decode buffers in `0x5Cxxxxxx` only. So the code is not a `.ap`-, `.drv`- or
+  `.sty`-based overlay.
+
+**Conclusion: the MIPS16e code at `0xBFC04391`–`0xBFC08845` (~17.6 KB) is not
+present in the unpacked firmware package.** It is referenced by the kernel's own
+table and by KER_INIT, but no component, boot blob or bank carries it, so it
+must come from a stage this analysis cannot see — a mask-ROM stage, the ADFU
+recovery path, or a transformed/compressed section that has not been decoded.
+This is the state to record, not a gap to paper over with a mapping.
+
    `ker_xsys.bin` also contains a *bank-switch* dispatch its own header-relative
    table drives: `lui k1,0xbfc2; addu k1,k1,4*flag; lw k1,-26252(k1)` selects an
    IRQ bank from a table at `0xBFC19980`, indexed by the byte flag at
