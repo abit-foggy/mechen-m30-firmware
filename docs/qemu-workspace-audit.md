@@ -781,3 +781,60 @@ Resolving this needs one of: a decode of the `kernel.drv` header field at `+0x48
 overlay bank table, never parsed), an `actions_flash` implementation reference for
 the `KER_TEXT`-style table, or a boot-record/boot-ROM dump. **No read-only hardware
 investigation is proposed here; the player was not touched.**
+
+---
+
+## YQHX descriptor decode and the `+0x48` field (2026-11-12)
+
+A full YQHX header parser now runs over all 25 `.drv`/`.ap` modules
+(`tools/qemu/yqhx.py`, exercised by `tools/qemu/yqhxtest.py`). Verified
+descriptors for `kernel.drv`:
+
+| segment | file foff | size | load |
+|---|---|---|---|
+| resident | `0x200` | `0xB00` | `0xBFC08000` |
+| data | `0xD00` | `0x7F4` | `0x9FC1A400` |
+
+and `kernel.drv`'s resident body is byte-identical to `ker_text.bin`, so the two
+names are one module (`ker_text.bin` = resident + 0x100 trailing zeros).
+
+### The `+0x48` entry is not a loadable code section
+
+`+0x48` appears in **every** module, so it is a real header field, but it is not
+a `{foff, size}` pair for a code section:
+
+- it **exceeds the file size** in 8 modules (`key.drv`: `0xD00+0x1000` in a
+  `0x1600` file; every `.ap`: `0x1D600` in files of `0x3200`-`0x22400`);
+- it **starts inside the already-declared data segment** in 5 modules
+  (`kernel.drv`: `0xE00` inside data `0xD00-0x14F4`; `fat_32n`/`exfatn`;
+  `drv_dac`/`drv_ui`);
+- for `.ap` files it is essentially constant (`0x1D600`), which rules out a
+  per-module section offset.
+
+Reproducing the earlier "8 MIPS16e `jr $ra` in the tail" claim requires care:
+two of the 16 `0xE820` halfwords in `kernel.drv` fall inside the resident
+pointer table, so a single `0xE820` is not evidence of a function, exactly as
+the phase brief warned. Disassembling the tail as MIPS16e with objdump
+(`-m mips:micromips`) produced mostly `.short` undecodable halfwords, and
+cross-checking with the QEMU MIPS16e oracle gave non-coherent decodes
+(`slti`, `beqzl`, `bnec`, `balc`).
+
+### What was tried and rejected
+
+A behavioural sweep placed `kernel.drv[0x14F4:0x3200]` at every `0x100` base from
+`0xBFC04000` to `0xBFC04600` and scored whether `0xBFC04634` decoded as code and
+whether the exception vector stopped storming. The metric was not
+discriminatory: the `map=` machine option *replaces* the whole firmware loader,
+so those runs were already missing 49 of the 54 placements and every base still
+produced ~1M `nop`s. A base search under a broken baseline is not evidence, and
+no base is claimed as a result.
+
+### Remaining missing information
+
+To place the `0xBFC045F4`/`0xBFC04634` MIPS16e routines the missing evidence is
+the **semantics of `+0x48`**, or equivalently a table mapping the `0x1F0x`/`0x2F0x`
+tag families (window base `0x9000`, bank index in steps of 4) to file offsets
+and load addresses. A candidate would have to be derived from the firmware, and
+no such derivation survived checking, so **no fast-boot placement for that region
+was implemented**. The existing loader, `boottest.sh` and `kernelmaptest` are
+unchanged and still pass; `m30.c` is byte-identical to its last committed state.
