@@ -676,3 +676,108 @@ The `pc=` machine property is a real, verified improvement — it makes firmware
 run that was previously unreachable — but the exception loop still terminates both
 entry points, so the success criterion of reaching a *new verified code path that does
 not loop* is not met.
+
+---
+
+## Boot-chain investigation (2026-11-11, third pass)
+
+### A. Normal boot vs ADFU / upgrade, separated
+
+`NORHWSC.BIN` and `NORFWSC.BIN` are **two different stages, not one scanner**:
+
+| blob | size | `jr $ra` | evidence | role |
+|---|---|---|---|---|
+| `NORHWSC.BIN` | 0x800 | 8 | same prologue as KER_INIT; register RMW + delay loops at `0xC0100000`/`0xC012001C`; writes `"HW"` at `0x9FC24008` | **normal boot, hardware init** |
+| `NORFWSC.BIN` | 0x2A00 | 6 | carries `"checksum"`, `"head sum"`, `"param sector"`, `"usb_sn: "` | **ADFU / USB firmware-upgrade path** |
+
+The AFI directory gives both load address `0xBFC1E000`, and directory order lets the
+upgrade blob silently overwrite the boot stage. Entering `NORHWSC` at `0xBFC1E000`
+does run its own functions (59 TBs over `0xBFC1E000`–`0xBFC1E5B4`) but it runs past
+its own 0x800 bytes into `NORFWSC`'s region and faults ExcCode 7 (DBE) at
+`0xBFC1EF63`. **It does not fill the `0xBFC04xxx` hole.**
+
+### B. `NORBREC.BIN` structure, parsed
+
+A filename table of four NUL-terminated names followed immediately by an address array:
+
+```
+0x0AFC  "KER_TEXTBIN\0"
+0x0B08  "KER_DATABIN\0"
+0x0B14  "KER_INITBIN\0"
+0x0B20  "KER_XSYSBIN\0"
+0x0B2C  address array:
+          0x9fc12000  0xbfc10138  0xbfc02600  0xbfc08000
+          0x9fc1a400  0xbfc32000  0xbfc19580
+```
+
+Two of the seven are already confirmed placements (`0xBFC08000` = kernel.drv
+resident, `0x9FC1A400` = its data segment), so the array is a load-address table and
+the preceding records embed the same addresses as plain 32-bit values (e.g.
+`0x9FC27000`, `0xBFC02600`, `0xBFC10138` at `+0xA60`). `NORBREC.BIN` contains no
+MIPS code markers of either ISA. **The record boundaries and the name→address
+indexing remain unverified** — four names against seven addresses cannot be paired
+by adjacency, and no record-length field has been identified, so this is explicitly
+not yet a mapping.
+
+### C. Where the missing MIPS16e routines come from
+
+The earlier conclusion — "the code is not in the firmware" — was **an artifact of
+scanning with MIPS32 instruction signatures**. MIPS16e `jr $ra` is the 16-bit
+`0xE820`, not the 32-bit `0x03E00008`. Re-scanning with the correct marker:
+
+| kernel.drv region | MIPS16e `jr $ra` |
+|---|---|
+| resident `0x200–0xD00` | 2 |
+| data `0xD00–0x14F4` | 4 |
+| **unplaced `0x14F4–0x3200`** | **8** |
+| unplaced `0x3200–0x4C00` | 2 |
+
+So the unplaced tail of `kernel.drv` **does** contain MIPS16e code.
+
+The resolution is the **overlay-pointer model** from `kilicdev/actions_flash`'s
+`RE_NOTES.md`, which this firmware matches structurally. Its documented encoding is
+`tag | window | in_bank_offset | isa_bit` with a fixed per-module window base. In
+`ker_text.bin`'s table, 34 of the 128 entries carry a tagged form whose high half is
+one of `0x1F00/0x1F04/0x1F08/0x1F0C/0x1F10/0x1F14/0x1F18` or
+`0x2F00/0x2F04/0x2F08/0x2F0C/0x2F18/0x2F1C/0x2F20` (increments of 4 = bank index),
+and whose low half is **always odd and always in `0x9000–0x9FFF`** — i.e. a fixed
+window base of `0x9000` plus an in-bank offset, with the ISA bit set. The remaining
+entries are ordinary `0xBFC0xxxx` addresses and zeros.
+
+**So `0xBFC045F4` / `0xBFC045F5` is not a flat address to be mapped: it is a tagged
+reference into an overlay bank that has to be loaded first.** That is why nothing in
+the unpacked image resolves it, and why adding memory at `0x5C08xxxx` would be wrong.
+
+A MIPS16e oracle was built to test bank placements: a 16-byte MIPS32 stub
+(`lui v0,0xbfc0; addiu v0,v0,<target>; jalr v0`) placed at `0xBFC04000` with the
+candidate at `0xBFC04010` and `pc=` set to the stub, so QEMU enters MIPS16e at the
+target and its `-d in_asm` trace gives the decode. This is how the encodings above
+were derived (`jr $ra` = `e820`, `nop` = `6500`).
+
+**A false positive this method produced, recorded so it is not repeated:** placing
+all of `kernel.drv` at `0xBFC04010` shifts its resident dispatcher (file `0x380`,
+= resident `+0x180`) onto `0xBC04390`, so `0xBFC04391` decodes as `mfc0 k0,$14` and
+27/40 KER_TEXT targets appear "clean". That is the displaced copy of the dispatcher
+already known to be at `0xBFC06D6C`, not new code.
+
+### D. Expected CPU/memory state at KER_INIT entry
+
+CP0 `Status = 0x00400006` → **BEV = 1, ERL = 1, EXL = 1**, IE = 0. EPC was
+`0x5C082D13`, odd, so the CPU was in **MIPS16e mode**. No stack was installed before
+the prologue's `addiu sp,sp,-24`, and BSS clearing happens *after* the first call.
+The handler table at `0x9FC1A9A4` holds image data, not runtime-populated entries.
+
+### E. What is still missing, precisely
+
+To execute firmware-backed MIPS16e code at `0xBC045F4`/`0xBFC04634`, the missing
+evidence is **the bank table that maps the `0x1F0x`/`0x2F0x` tags to file offsets and
+load addresses** — the same structure `RE_NOTES.md` documents for `BTENGINE.AP` at
+file offset `0x100` (11 banks, 12-byte triples). No `.drv` in this image exposes one;
+the 443 12-byte bank triples found across the `.ap` files all load into
+`0x40000000`–`0x48D14600` and none is indexed by these tags.
+
+Resolving this needs one of: a decode of the `kernel.drv` header field at `+0x48`
+(`0xE00` file offset / `0x2400` size / `0xBF08000` load — almost certainly the
+overlay bank table, never parsed), an `actions_flash` implementation reference for
+the `KER_TEXT`-style table, or a boot-record/boot-ROM dump. **No read-only hardware
+investigation is proposed here; the player was not touched.**
