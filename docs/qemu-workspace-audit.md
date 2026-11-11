@@ -434,21 +434,69 @@ properties must be instance-level; link addresses are virtual while
 saves EPC to absolute `0x13DD8`); and the peripheral window is at `0x00120000`,
 not `0xB0000000`.
 
-### The remaining blockers (updated 2026-11-11)
+### The remaining blockers (updated 2026-11-11, exception dispatch verified)
 
 The `jal 0xbfc32224` reserved-instruction fault is **fixed and verified**; see
-"What is working and measured" for the corrected placements. What replaced it:
+"What is working and measured" for the corrected placements. The first exception
+after that fix was then characterised end to end, via the HMP monitor and
+`-d in_asm,int`:
+
+#### The exact first exception
+
+| CP0 field | value | meaning |
+|---|---|---|
+| Cause | `0x00000018` | ExcCode = `(0x18 >> 2) & 0x1f` = **6 = IBE** |
+| Status | `0x00400006` | BEV = 1, **ERL = 1, EXL = 1**, IE = 0 |
+| EPC | `0x5C082D13` | odd, so the CPU was in **MIPS16e mode** |
+| BadVAddr | `0x00000000` | not updated for fetch faults |
+| ErrorEPC / DEPC | `0x00000000` | unused |
+
+> **A numbering trap worth recording.** QEMU logs this fault as
+> `do_raise_exception_err: 15 (instruction bus error)`. That `15` is QEMU's
+> *internal* `EXCP_IBE` enum index, not a CP0 ExcCode; the architectural ExcCode
+> is 6. CP0 ExcCode 15 is FPE. Earlier reports calling this "ExcCode 15" mixed the
+> two up. The `-d int` line `mips_cpu_do_interrupt: PC bfc00380 EPC 5c082d13
+> cause 6` gives the architectural code directly.
 
 1. **The handler table dispatches to an unmapped address.** The dispatcher at
-   `0xBFC06D6C` runs correctly and indexes a table at `0x9FC1A9A4` (inside
-   `kernel.drv`'s data segment, `0x9FC1A400..0x9FC1ABF4`, FWIMAGE file 0x2d00).
-   Entry 0 (`Cause & 0x7c == 0`) is `0x5C082D13` — odd, so `jr k0` strips bit 0
-   and enters MIPS16e at `0x5C082D12`, which is in kuseg and unmapped. The CPU
-   then raises ExcCode 15 (instruction bus error) at PC `0x5C082D12`, EPC 0,
-   Cause 6, and loops through the general vector at `0xbfc00380`. Measured:
-   4.6 M interrupts, 2418 nops, 25 distinct TBs.
+   `0xBFC06D6C` runs correctly and indexes a table at **`0x9FC1A9A4`** — *not*
+   `0x9FC25AA4`, which reads as all zeros; that earlier figure was an arithmetic
+   slip (`0x9FC20000 + 0x5AA4` instead of `0x9FC20000 - 0x565C`). The table sits
+   inside `kernel.drv`'s data segment (`0x9FC1A400..0x9FC1ABF4`, FWIMAGE file
+   0x2d00, offset `+0x5A4`, verified live with `xp /32xw 0x1fc1a9a4`).
+   The index is `(Cause & 0x7c) >> 2` = ExcCode, and at the call Cause is 0, so
+   entry 0 is used: `0x5C082D13`, odd, so `jr k0` clears bit 0 and enters
+   MIPS16e at `0x5C082D12`, which is kuseg and unmapped.
 
-2. **The `0xBFC04xxx`–`0xBFC08xxx` region is missing ~4.2 KB of MIPS16e code.**
+   **The value is firmware-backed but lonely.** `0x5C082D13` occurs *exactly once*
+   in the entire 11 MB image — at the table entry itself — and `0x5C082D12`
+   occurs *zero* times. There is no relocation table and no second reference. All
+   443 bank triples across every `.ap`/`.drv` declare load addresses in
+   `0x40000000`–`0x48D14600`; **none** is in `0x5C000000`–`0x5CFFFFFF`. `31` of
+   `32` table entries are not plausible code pointers. So this is not a properly
+   populated handler table at this point in the boot.
+
+   **Note what the registers then do, because it explains the loop shape.** The
+   take of the exception sets EXL, and QEMU's `set_EPC` only writes EPC *while
+   EXL is clear* — so EPC is frozen at `0x5C082D13` forever after. The measured
+   trace is exactly one IBE followed by ~2.9 M reserved-instruction faults, all
+   reporting that frozen EPC. The storm is a consequence, not a separate bug.
+
+   **`0x5Cxxxxxx` is nonetheless a real firmware region.** `setting.sty` declares
+   large decode buffers at `0x5C140000` (1.75 MB), `0x5C3C0000`, `0x5C400000`,
+   `0x5C440000`, `0x5C480000`, `0x5C4C0000`, `0x5CD80000`, `0x5CE80000`. The
+   emulator models none of them (`xp` returns "Cannot access memory"). The
+   firmware therefore does treat `0x5C000000` upward as DRAM; no fix has been
+   made here, since nothing establishes that *handler code* belongs at
+   `0x5C082D12` at reset time.
+
+2. **The general exception vector at `0xBFC00380` cannot recover.** It computes
+   `0xBFC04635` and jumps to MIPS16e at `0xBFC04634`, which is inside the missing
+   region below, so it nop-walks and faults again with EXL latched. This is the
+   immediate second blocker: without a handler there the CPU has no way to
+   resume, whatever is installed at `0x5C08xxxx`.
+
+3. **The `0xBFC04xxx`–`0xBFC08xxx` region is missing ~4.2 KB of MIPS16e code.**
    `kernel.drv`'s data segment holds real function pointers into it:
    `0xBFC04635` (exactly the value the general exception vector computes),
    `0xBFC045F5`, `0xBFC04699`, `0xBFC05125`, `0xBFC05369`, `0xBFC064B0`,
@@ -456,8 +504,13 @@ The `jal 0xbfc32224` reserved-instruction fault is **fixed and verified**; see
    MIPS16e at `0xBFC045F4` and `0xBFC033D4`. Nothing in the currently-placed
    component set covers that span.
 
+   `ker_xsys.bin` also contains a *bank-switch* dispatch its own header-relative
+   table drives: `lui k1,0xbfc2; addu k1,k1,4*flag; lw k1,-26252(k1)` selects an
+   IRQ bank from a table at `0xBFC19980`, indexed by the byte flag at
+   `0x9FC1A485`. That table is also unplaced.
+
    The 12-byte bank table exists only in the 11 `.ap` files and every bank load
-   address is in SDRAM (`0x40xxxxxx`–`0x7Fxxxxxx`); all 14 `.drv` files have no
+   address is in SDRAM (`0x40xxxxxx`–`0x48D14600`); all 14 `.drv` files have no
    bank table. So this is *not* `.ap`-style bank loading.
 
 `NORBREC.BIN` (166,400 bytes, AFI load address 0) contains an address array at
@@ -467,6 +520,13 @@ The `jal 0xbfc32224` reserved-instruction fault is **fixed and verified**; see
 boot-record / placement table rather than code. Decoding it is the next concrete
 step: it is what the real boot chain uses to place the kernel image, and it is the
 only identified source that could fill the `0xBFC04xxx` hole.
+
+#### Regression coverage
+
+`tools/qemu/boottest.sh` asserts the six invariants above, including the exact
+first-exception state (one IBE, `EPC 5c082d13 cause 6`, EPC frozen). It was
+verified to fail loudly both when the kernel deferral is removed and when
+`KER_TEXT_ADDR` is put back at `0xBFC33030`.
 
 ### Consequence for the recommendation above
 
