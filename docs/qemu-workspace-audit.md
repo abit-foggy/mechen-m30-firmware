@@ -994,3 +994,42 @@ quietly merge.
 * emulator-supplied: the 12 bytes at `0xBFC045F4` only, and only in fast-boot
   mode. It models one fill operation — no dispatch, no vector, no bank
   loading, and no register it does not already own.
+
+---
+
+## M3U audit: the playlist subsystem is a database reader, not a parser (2026-11-12)
+
+Phase 1 of the custom-firmware work. `tools/m3u_audit.py` answers the question the
+brief asked: can a user reach a playlist from the folder browser, and does the
+firmware parse `.m3u`?
+
+**The playlist *database* format is real.** `playlist.ap` carries its own
+`playlist.sty`, and the firmware names `M3U.LIB`, `MUSIC.LIB` and three
+`USERPL1-3.PL` user playlist databases. `browser.ap`, `music.ap`, `playlist.ap`,
+`mainmenu.ap`, `mengine.ap`, `setting.ap` and `config.ap` all reference
+`M3U.LIB`, so `playlist.ap` renders those databases.
+
+**But `.m3u` files are invisible to the folder browser.** Every `.ap` that
+enumerates files carries the same fixed-stride extension array (4 bytes per
+slot, three characters plus a NUL). `browser.ap`'s is at file `+0xC188`:
+
+```
+MP3 WMA WAV AAC FLAC APE AVI TXT JPG JPEG DSF DFF LRC ASF OGG WMV
+AMV AAX AA MP1 MP2 M4A ** ACT ** AIF ** **            (28 slots)
+```
+
+`M3U` and `M3U8` are absent from all three arrays. So `.m3u` files are filtered
+out by the extension mask -- exactly the case the brief asked to distinguish.
+(`M3U` appearing in `playlist.ap` is the *database filename* `M3U.LIB` in a
+12-byte-padded name table, not an extension entry; the audit tool asserts both
+factss separately so the two cannot be confused again.)
+
+**And there is no `.m3u` parser to reuse.** No `#EXTM3U`, no `#EXTINF`, and no
+`.m3u` extension string anywhere in the firmware. `M3U.LIB` is a database built
+elsewhere and read directly by the player.
+
+**Consequence:** the README's "M3U handling" is a database *format*, not a
+playlist-file parser. A playlist copied to the card is both invisible and
+unparseable. The gap is a missing parser, not a missing filter entry, so the
+brief's preferred option ("a minimal navigation hook over rewriting the
+parser") is not available -- there is nothing to hook into.

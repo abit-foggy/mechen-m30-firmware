@@ -112,10 +112,27 @@ def main():
             check(len(exts) >= 10,
                   "the list is a real type filter (%d entries), not a stray table"
                   % len(exts))
+    # 3. the decisive question: is there a .m3u *parser* at all?
+    allblobs = b"".join(b for _, b in comps)
+    for marker in (b"#EXTM3U", b"#EXTINF", b".m3u"):
+        check(marker not in allblobs,
+              "no %r anywhere in the firmware: there is no .m3u *parser*" % marker)
+    check(b"M3U.LIB" in allblobs,
+          "M3U.LIB exists -- so the playlist *database* format exists, which is"
+          " a different thing from parsing a .m3u file")
+    check(b"USERPL1.PL" in allblobs,
+          "USERPL1-3.PL exist: playlist databases the device reads directly")
+
     print()
-    print("verdict: the parser and database exist, but the folder browser does"
-          " not enumerate .m3u, so a playlist cannot be opened from it. The"
-          " gap is the extension filter, not the parser.")
+    print("verdict:")
+    print("  * the playlist *database* format exists (M3U.LIB, USERPL1-3.PL,")
+    print("    playlist.sty) and playlist.ap renders those databases.")
+    print("  * the folder browser's extension array has no M3U entry, so .m3u")
+    print("    files are never listed.")
+    print("  * and there is no .m3u parser in the firmware at all -- no")
+    print("    #EXTM3U, no #EXTINF, no .m3u extension anywhere.")
+    print("  => a playlist on the card is invisible AND unparseable. The gap is")
+    print("     a missing parser, not just a missing filter entry.")
     return rc
 
 
