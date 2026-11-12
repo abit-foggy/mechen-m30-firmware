@@ -197,24 +197,29 @@ def cmd_check(card):
 
 
 def cmd_refs(fwdir=None):
-    """Does any code read M3U.LIB?
+    """How is a library file selected? Correcting an earlier wrong answer.
 
-    The two library kinds are selected by a table in playlist.ap at file 0x2a20:
-    {0x7e190ea0, 0xbfc166c8} for MUSIC.LIB and {0x00080400, 0} for M3U.LIB. The
-    filenames themselves live in a second table, in each module's bank, as
-    adjacent 12-byte entries. This counts which of those pointers any code
-    actually loads.
+    An earlier pass searched for a pointer to the string "M3U.LIB" and found
+    none, and concluded the database had no reader. That was wrong: M3U.LIB is
+    not selected through its own pointer. music.ap's bank 0x7805b200 holds a
+    12-byte-strided filename table based at guest 0x7805b498:
 
-    A pointer that nothing loads is a database nobody reads, which changes the
-    fix entirely: the records are already there, and the missing piece is a
-    consumer, not a way to get the files enumerated.
+        +0x000  "MUSIC.LIB\\0\\0\\0"
+        +0x00c  "M3U.LIB\\0\\0\\0\\0\\0"
+
+    and the routine at 0x7805b370 computes `0x7805b498 + index*12` to pick one
+    (0x7805b3f2 lhu index, 0x7805b3f6-fa sll/sll to *12, 0x7805b3fc lw base,
+    0x7805b3fe addu). So the library kind is a *table index*, and searching for
+    a pointer to M3U.LIB was guaranteed to come up empty.
+
+    The same bank also holds the machinery that uses it: 0x7805b200 converts a
+    name to UTF-16LE with an FFFF/FFFE prefix, 0x7805b264 turns an index into a
+    cluster and a <<9 sector read, and 0x7805b370 opens a library, selects by
+    mask and reads its header. Those are what a playlist view would reuse.
     """
     fwdir = fwdir or os.environ.get(
         "M30_STOCK", "/home/foggy/m30/mechen-m30-firmware/build/work/stock/fw")
     comps = sorted(os.listdir(fwdir))
-    # music.ap's bank 0x7805b200 holds the name pair; MUSIC.LIB first
-    MUSIC_PTR, M3U_PTR = 0x7805B498, 0x7805B4A4
-    MASKS = {0x7E190EA0: "MUSIC.LIB", 0x00080400: "M3U.LIB"}
     rc = 0
 
     def check(ok, msg):
@@ -223,54 +228,71 @@ def cmd_refs(fwdir=None):
         if not ok:
             rc = 1
 
-    counts = {MUSIC_PTR: [], M3U_PTR: []}
-    mask_counts = {v: [] for v in MASKS}
+    # 1. the indexed filename table, in music.ap's bank 0x7805b200
+    bank = fwdir and os.path.join(fwdir, "music.ap")
+    if not os.path.isfile(bank):
+        print("m3ulib: no music.ap at %s" % bank)
+        return 2
+    with open(bank, "rb") as f:
+        blob = f.read()
+    # locate the bank's file range by its link address in the group-4 table
+    start = end = None
+    for lo in (0x100, 0xA00):
+        for o in range(lo, lo + 0x800, 12):
+            fo, addr, sz = struct.unpack_from("<3I", blob, o)
+            if addr == 0x7805B200 and 0 < sz <= 0x10000:
+                start, end = fo, fo + sz
+                break
+        if start:
+            break
+    check(start is not None, "music.ap bank 0x7805b200 is present")
+    if start:
+        # find the table inside it rather than trusting a recorded offset
+        i = blob.find(b"MUSIC.LIB\x00\x00\x00", start, end)
+        check(i >= 0 and i % 4 == 0,
+              "the filename table is in the bank, 4-byte aligned")
+        if i >= 0:
+            check(blob[i:i + 12] == b"MUSIC.LIB\x00\x00\x00",
+                  "slot 0 is MUSIC.LIB at bank +%#x" % (i - start))
+            check(blob[i + 12:i + 24] == b"M3U.LIB\x00\x00\x00\x00\x00",
+                  "slot 1 is M3U.LIB, 12 bytes on")
+
+    # 2. the selector: a pointer to the table base, not to a filename
+    base = 0x7805B498
+    pat = struct.pack("<I", base)
+    users = []
     for c in comps:
         p = os.path.join(fwdir, c)
         if not os.path.isfile(p):
             continue
         with open(p, "rb") as f:
             d = f.read()
-        for ptr in counts:
-            pat = struct.pack("<I", ptr)
-            i = d.find(pat)
-            while i >= 0:
-                counts[ptr].append((c, i))
-                i = d.find(pat, i + 1)
-        for v in MASKS:
-            pat = struct.pack("<I", v)
-            i = d.find(pat)
-            while i >= 0:
-                mask_counts[v].append((c, i))
-                i = d.find(pat, i + 1)
+        j = d.find(pat)
+        while j >= 0:
+            users.append((c, j))
+            j = d.find(pat, j + 1)
+    check(bool(users),
+          "the table base %#x is referenced from %d places"
+          % (base, len(users)))
+    for c, j in users[:6]:
+        print("        %s +%#x" % (c, j))
 
-    check(counts[MUSIC_PTR],
-          "the MUSIC.LIB filename pointer is loaded from %d places"
-          % len(counts[MUSIC_PTR]))
-    for c, i in counts[MUSIC_PTR][:6]:
-        print("        %s +%#x" % (c, i))
-    check(not counts[M3U_PTR],
-          "the M3U.LIB filename pointer is loaded from %d places"
-          % len(counts[M3U_PTR]))
-    for c, i in counts[M3U_PTR][:6]:
-        print("        %s +%#x" % (c, i))
-
-    # The M3U mask is a table entry and nothing else. The same 4 bytes recur
-    # hundreds of times inside new_m.fnt and admp3.dsp, but those are glyph and
-    # filter-coefficient data, not code, so they are excluded before counting.
-    only_table = [h for h in mask_counts[0x00080400]
-                  if os.path.basename(h[0]) == "playlist.ap" and 0x2A20 <= h[1] <= 0x2A28]
-    data_only = [h for h in mask_counts[0x00080400]
-                 if os.path.basename(h[0]) in ("new_m.fnt", "admp3.dsp")]
-    elsewhere = [h for h in mask_counts[0x00080400]
-                 if h not in only_table and h not in data_only]
-    check(len(only_table) == 1,
-          "the M3U mask %#x appears exactly once outside font and DSP data,"
-          " at the playlist.ap table entry" % 0x00080400)
-    check(not elsewhere,
-          "it never appears as a code immediate, so no code path is M3U-specific"
-          " (the %d other byte matches are all glyph/filter data)"
-          % len(data_only))
+    # 3. no standalone pointer to M3U.LIB is expected, and is not a blocker
+    m3u_pat = struct.pack("<I", base + 12)
+    direct = []
+    for c in comps:
+        p = os.path.join(fwdir, c)
+        if not os.path.isfile(p):
+            continue
+        with open(p, "rb") as f:
+            d = f.read()
+        j = d.find(m3u_pat)
+        while j >= 0:
+            direct.append((c, j))
+            j = d.find(m3u_pat, j + 1)
+    print("NOTE  a pointer to M3U.LIB alone is loaded from %d places, which is"
+          % len(direct))
+    print("NOTE  the expected result: it is reached by index, not by address.")
     print("refs: %s" % ("OK" if rc == 0 else "FAILED"))
     return rc
 
