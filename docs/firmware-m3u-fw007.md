@@ -210,3 +210,66 @@ sentinel check, so its shape is a small state machine over a numeric table.
 The single added call in the community routine therefore does **not** establish
 an M3U behaviour either. The community fix set that lands here is some other fix
 from the V1.101.11 lineage.
+
+---
+
+## 8. `M30-FW-007` isolated: the CRLF/LF line-ending state machine (2026-11-12)
+
+The M3U fix is **not** the `browser.ap` pointer redirection. It is in
+`playlist.ap`, in a region that is entirely **zero in the stock image**.
+
+### The changed region
+
+`playlist.ap`, stock vs community V1.101.11. The dominant change is a ~107-byte
+run at `+0x9318`–`+0x9382` that is blank in stock and filled with MIPS16e code in
+the community build. It lies in the group-3 bank at file `0x8C00` (link
+`0x480D4400`, size `0x800`), so the new code is at guest **`0x480D4B18`**.
+
+```asm
+0x480d4b18  lbu   $v0, 3($s1)      ; load the parser's state byte
+0x480d4b1a  cmpi  $v0, 0xA         ; compare with LF
+0x480d4b1c  btnez 0x480D4B2C       ; not LF: skip the CRLF merge
+0x480d4b1e  li    $v0, 1
+0x480d4b20  neg   $v0, $v0         ; -1
+0x480d4b22  sb    $v0, 0($s1)      ; mark the CR as consumed
+0x480d4b24  li    $v0, 0
+0x480d4b26  sh    $v0, 6($s1)      ; clear the pending length
+0x480d4b28  li    $v0, 0
+0x480d4b2a  sb    $v0, 2($s1)
+0x480d4b2c  lw    $v0, 0x10($s1)   ; advance the cursor
+0x480d4b2e  addiu $v0, 1
+...
+0x480d4b52  li    $v0, 0xD         ; 13 = CR, the other line-ending byte
+0x480d4b54  sb    $v0, 3($s1)      ; store it as the pending terminator
+0x480d4b56  b     0x480D4644       ; resume the line loop
+```
+
+The two constants **`0xA` (LF) and `0xD` (CR)** at fixed offsets against a
+single state byte is the CRLF/LF line-ending handling described in the
+changelog. Stock has zeros here, so stock's playlist reader cannot merge a CRLF
+pair.
+
+### The two one-byte edits at `+0xA5ED` and `+0xA5EF`
+
+These are elsewhere in the same image (in a far bank) and change one halfword
+from `0x8460` to `0xA460`. They are a separate change from the line-ending
+routine and are not proven to belong to `M30-FW-007`.
+
+### Ownership, kept honest
+
+The `browser.ap` pointer redirection documented above is a **different** fix set
+entry: its callee is numeric state processing with no string handling. So the
+evidence supports the following split:
+
+| change | module | belongs to |
+|---|---|---|
+| CRLF/LF state machine, ~107 bytes, blank in stock | `playlist.ap` `+0x9318` (`0x480D4B18`) | **M30-FW-007** (the only change with `0xA`/`0xD` line-ending constants) |
+| dispatch pointer redirection + added callee | `browser.ap` `+0x46CC`, `0x714D2658` | unresolved — one of the other V1.101.11 fixes |
+| two one-byte halfword edits | `playlist.ap` `+0xA5ED`/`+0xA5EF` | unresolved |
+
+### Consequence for our parser
+
+`tools/m3u/m3u.c` implements the same behaviour from scratch: CRLF and LF both
+terminate a line, a final line without a terminator is returned, and comment and
+blank lines are skipped. It does not reuse the community bytes, and it is
+host-tested (`tools/m3u/test_m3u.py`, 16 assertions).
