@@ -101,7 +101,8 @@ def build(work):
     host_cc = os.environ.get("HOST_CC", "cc")
     cmd = [host_cc, "-O1", "-Wall", "-Wextra", "-I" + HERE,
            "-o", exe, os.path.join(HERE, "harness.c"),
-           os.path.join(HERE, "m3u.c")]
+           os.path.join(HERE, "m3u.c"),
+           os.path.join(HERE, "m3uw.c")]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
         print("test_m3u: build failed")
