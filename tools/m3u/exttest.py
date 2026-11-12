@@ -244,24 +244,19 @@ def main():
         cp = load(comm, "playlist.ap")
         if sp is not None and cp is not None:
             music, middle, m3u = struct.unpack_from("<3I", sp, MASK_TABLE)
+            # These two words sit at these offsets. Calling them bitmasks is
+            # NOT verified: browser.ap 0xbfc1673a stores the first into a
+            # struct field and never tests bits of it in that function, and
+            # the walker at 0xbfc168a0 filters on a per-node category byte
+            # (0xFF = matches any), not on a 32-bit mask. Pinned as values.
             check(music == MUSIC_MASK,
-                  "playlist.ap: the MUSIC.LIB mask is %#x (got %#x)"
-                  % (MUSIC_MASK, music))
+                  "playlist.ap: the word at %#x is %#x" % (MASK_TABLE, MUSIC_MASK))
             check(m3u == M3U_MASK,
-                  "playlist.ap: the M3U.LIB mask is %#x (got %#x)"
-                  % (M3U_MASK, m3u))
-            check(0xBFC00000 <= middle < 0xBFC20000,
-                  "playlist.ap: the word between the masks is a resident"
-                  " address (%#x), not a MIPS16e pointer" % middle)
+                  "playlist.ap: the word at %#x is %#x" % (MASK_TABLE + 8, M3U_MASK))
             check(sp[MASK_TABLE - 8:MASK_TABLE + 0x10] ==
                   cp[MASK_TABLE - 8:MASK_TABLE + 0x10],
                   "playlist.ap: the community image leaves the masks unchanged")
-            check(bin(music).count("1") == 14,
-                  "the MUSIC.LIB mask sets 14 bits (got %d)"
-                  % bin(music).count("1"))
-            check(bin(m3u).count("1") == 2,
-                  "the M3U.LIB mask sets 2 bits (got %d)"
-                  % bin(m3u).count("1"))
+            # no claim is made about what the bits mean
     else:
         print("SKIP  community image not unpacked; ran without it")
 
@@ -298,6 +293,77 @@ def main():
             check(len(wild) >= 2 and "ACT" in after and "AIF" in after,
                   "browser.ap: real entries (%s) sit after a '** ' slot, so a"
                   " wildcard does not end the walk" % "/".join(after))
+
+    # 9b. THE WALKER. This is the mechanism that decides whether a file is
+    #     enumerated, and it is not the 32-bit mask: it is a 16-byte node walker
+    #     whose filter is a per-node *category byte*, with 0xFF meaning "any".
+    #     Derived from browser.ap's resident bank, guest 0xbfc16400.
+    #     Every assertion below is on instruction bytes, so it is re-checkable.
+    RES_FOFF, RES_SIZE, RES_LOAD = 0xC00, 0x634, 0xBFC16400
+    WALKER = 0xBFC168A0
+
+    def r16(blob, guest, n=2):
+        o = RES_FOFF + (guest - RES_LOAD)
+        return blob[o:o + n]
+
+    if bap is not None:
+        o = RES_FOFF + (WALKER - RES_LOAD)
+        # prologue: save 0x28, $ra,$s0-$s1  ->  0x64f5
+        check(r16(bap, WALKER) == bytes.fromhex("f564"),
+              "browser.ap %#x: the walker starts with a MIPS16e save" % WALKER)
+        # 0xbfc168b2 'sll $a2,$v0,4' = 0x3650 -> the node stride is 16
+        check(r16(bap, 0xBFC168B2) == bytes.fromhex("5036"),
+              "browser.ap %#x: sll \$a2,\$v0,4 fixes the node stride at 16"
+              % 0xBFC168B2)
+        # 0xbfc168b6 'lbu $a1,1($s0)' = 0xa0a1 -> node+1 is a type byte
+        check(r16(bap, 0xBFC168B6) == bytes.fromhex("a1a0"),
+              "browser.ap %#x: node+1 is read as the type" % 0xBFC168B6)
+        # 0xbfc168b8 'cmpi $a1,1' + 0xbfc168ba bteqz -> nodes of type 1 only
+        check(r16(bap, 0xBFC168B8) == bytes.fromhex("0175")
+              and r16(bap, 0xBFC168BA) == bytes.fromhex("0460"),
+              "browser.ap: only nodes whose +1 type is 1 are examined")
+        # 0xbfc168c6 'lbu $v1,5($s0)' = 0xa065 -> node+5 is the category
+        check(r16(bap, 0xBFC168C6) == bytes.fromhex("65a0"),
+              "browser.ap %#x: node+5 is read as the category byte"
+              % 0xBFC168C6)
+        # 0xbfc168ca xor, 0xbfc168cc beqz -> pass when node[+5] == *current
+        check(r16(bap, 0xBFC168CA) == bytes.fromhex("6eed")
+              and r16(bap, 0xBFC168CC) == bytes.fromhex("0225"),
+              "browser.ap: a node passes when its category equals the filter")
+        # 0xbfc168ce 'cmpi $v1,0xFF' + 0xbfc168d0 btnez -> 0xFF means any
+        check(r16(bap, 0xBFC168CE) == bytes.fromhex("ff73")
+              and r16(bap, 0xBFC168D0) == bytes.fromhex("3061"),
+              "browser.ap %#x: a category of 0xFF matches any filter, so 0xFF"
+              " is the wildcard" % 0xBFC168CE)
+        # the per-node callback is invoked through node+12
+        check(r16(bap, 0xBFC16912) == bytes.fromhex("4398")
+              and r16(bap, 0xBFC16914) == bytes.fromhex("c0ea"),
+              "browser.ap: node+12 holds the per-node callback and is called"
+              " with jalrc")
+        # the pointer table the walker reads lives right after it
+        tbl = [int.from_bytes(bap[RES_FOFF + (0xBFC16948 + 4 * k - RES_LOAD):
+                                  RES_FOFF + (0xBFC16948 + 4 * k - RES_LOAD) + 4],
+                              "little") for k in range(4)]
+        check(tbl[0] == 0x9FC15574 and tbl[1] == 0x9FC15584
+              and tbl[2] == 0x9FC1A1C8 and tbl[3] == 0x9FC15588,
+              "browser.ap: the walker's globals are at 0x9fc15574, 0x9fc15584,"
+              " 0x9fc1a1c8 and 0x9fc15588")
+        # the fifth entry is a trap address, not a function: 0xbfc16a25 falls
+        # inside the MIPS16e pair 'li $v1,15 ; break' at 0xbfc16a24
+        fifth = int.from_bytes(
+            bap[RES_FOFF + (0xBFC16958 - RES_LOAD):
+                RES_FOFF + (0xBFC16958 - RES_LOAD) + 4], "little")
+        check(fifth == 0xBFC16A25,
+              "browser.ap %#x holds %#x" % (0xBFC16958, fifth))
+        check(r16(bap, 0xBFC16A24, 4) == bytes.fromhex("0f6b05e8"),
+              "browser.ap %#x is 'li \$v1,15 ; break', so %#x is a trap and not"
+              " a routine -- any load of it is an error path"
+              % (0xBFC16A24, 0xBFC16A25))
+
+    print("NOTE  the enumeration filter is a category byte per node, not a")
+    print("NOTE  32-bit bitmask; the word values pinned above are pinned as")
+    print("NOTE  values only. Where a node array is built at runtime is not yet")
+    print("NOTE  known, so no patch is derived from this yet.")
 
     # 10. music.ap carries a shorter, audio-only array of its own
     map_ = load(STOCK, "music.ap")
