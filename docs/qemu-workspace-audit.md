@@ -1160,3 +1160,33 @@ Not verified:
 * the routines have not been decompiled, so the exact parse algorithm, its
   entry point, and how it is dispatched are unknown;
 * whether the two-byte resident edit is the call that reaches it.
+
+---
+
+## M30-FW-007 mapped to guest addresses (2026-11-12)
+
+The two changed bytes are at `browser.ap` file `0x46CC` (`e1`->`59`) and
+`0x46CE` (`41`->`4D`). File `0x46CC` falls inside the group-3 bank at file
+`0x4400`, whose link address is `0x40154c00`, so the edit is at guest
+**`0x40154ECC`** — exactly `FUN_40154ecc`, the "M3U scanner" that
+`docs/library-builder.md` names. That is the first time a community byte change
+has been tied to a documented function address rather than only to a file range.
+
+The ~740-byte region that is zero in stock sits in the group-4 bank at file
+`0xEB00`, link address `0x714D2500`, so it is guest **`0x714D2658`-`0x714D2B2F`**
+(+`0x158`..+`0x62F` within that bank).
+
+These are addresses, not conclusions. What is still unproven:
+
+* whether the changed halfwords at `0x40154ECC` form a call that reaches
+  `0x714D2658` at all — the diff shows two changed bytes inside
+  `FUN_40154ecc`, but reaching the region requires a call graph that has not
+  been traced;
+* what `FUN_40154ecc` does — the documentation calls it an M3U scanner with the
+  same shape as the MUSIC.LIB directory walk, which would make it a library
+  builder, not a line parser;
+* which of the eight community fix sets the 740-byte region belongs to.
+
+The `m3u_diff.py` + `m16dis.py` + `m3u_audit.py` tooling is in place to settle
+each of those; decompiling `0x40154ECC` and its callees is the next concrete
+step and the only thing that would justify calling this region an M3U parser.
