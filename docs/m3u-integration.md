@@ -82,13 +82,25 @@ all distinct and monotonic in record order, all multiples of 32. So bytes 0–11
 are constant across the ten playlists (the directory they live in) and bytes
 12–15 carry the per-record value. What bytes 4–11 *mean* is not established.
 
-## The shared filesystem entry
+## The trap-table rule
 
-`0xBFC16BB5`, called by `0x7805b264` and `0x7805b2dc` with op `0xB` to seek and
-op `0xD` to read `0x200` bytes into guest `0x7805B4B0`, context from RAM global
-`0x9fc15980` **[dis]**. It has on the order of 800 call sites across `music.ap`
-and `playlist.ap`; classifying them by opcode is the next step rather than
-reviewing them by hand.
+**Resident banks of this firmware end with a run of MIPS16e `li $v1,N ; break`
+pairs.** Any pointer *into* that region is an error path, never a call target.
+This has now produced two false conclusions in this project, so it is a standing
+rule:
+
+| address | where |
+|---|---|
+| `0xbfc16a25` | second byte of `li $v1,15 ; break` at `0xbfc16a24`, in **browser.ap**'s resident trap table |
+| `0xBFC16BB5` | inside **music.ap**'s resident trap table; its resident bank is `0xbfc16400`–`0xbfc16bbc` and ends with the same `li;break` run |
+
+So `0xBFC16BB5` is **not** a shared kernel filesystem entry. It is a trap, which
+is also *why* the three routines of bank `0x7805b200` are unreachable: calling
+any of them would trap. Nothing about a filesystem ABI follows from them.
+
+Whenever a promising "kernel entry" or "callback pointer" resolves into
+`0xbfc16xxx` near the end of a resident bank, check for the `05 e8` (`break`)
+byte before believing it.
 
 ## What is built
 

@@ -4,6 +4,12 @@
  * 0x7805b264 and 0x7805b2dc were directory readers and that a record's
  * location addressed an exFAT directory entry. Both claims are withdrawn.
  *
+ * The routines then call what an earlier pass took for a shared kernel
+ * filesystem entry at 0xBFC16BB5. It is not one: 0xBFC16BB5 falls inside
+ * music.ap's resident trap table, a run of `li $v1,N ; break`, so it is an
+ * error path. That is also why these routines are unreachable -- invoking them
+ * would trap. Nothing about a filesystem ABI follows.
+ *
  * What is verified:
  *
  *   - music.ap's bank 0x7805b200 (1208 bytes) holds, as its only ASCII strings,
