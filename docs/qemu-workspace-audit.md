@@ -1062,3 +1062,52 @@ A playlist copied to the card is invisible to the filesystem layer and cannot
 be indexed. The next evidence that would settle it is decompiling group 4 of
 `playlist.ap`'s bank table — the audit already prints the group-4 address the
 doc cites, so that is a mechanical next step rather than a new investigation.
+
+---
+
+## Group-4 bank table decoded; the visibility argument (2026-11-12)
+
+`docs/library-builder.md` says group 4 at `0xa00` holds the shared-library banks
+at `0x71xx2500`, and that the header word at `0x2c` makes `tools/apinfo.py` stop
+short of it. Confirmed for `browser.ap` (whose resident the doc's
+`0xbfc16411` / `0xbfc167d9` addresses belong to):
+
+| | |
+|---|---|
+| table offset | `0xA00` (stride 12) |
+| bank count | 22 |
+| link addresses | `0x71012500` .. `0x71552500` (stride `0x40000`) |
+| bank size | `0x800` each |
+| file offsets | `0x5300` .. `0xfb00` |
+
+Bank content decodes as MIPS16e. Note the alignment trap: reading group 4 with a
+4-byte offset produces plausible-looking but wrong banks, so the table's true
+start is `0xA00`, not `0x9FC`.
+
+### The argument that does not depend on decompiling the scanner
+
+`FUN_40154ecc` (the documented "M3U scanner") lives in bank `0x40154c00`,
+file `0x4400`, at `+0x2EC`, and has not been decompiled. But its reachability
+can be settled without that:
+
+1. The only way a file reaches any parser is directory enumeration, and
+   enumeration is gated by the file system driver's extension array.
+2. That array (`fat_32n.drv` `+0x77c`, `exfatn.drv` `+0x7f4`, 29 entries) has no
+   `M3U`.
+3. Therefore a `.m3u` file is never enumerated, so no parser -- wherever it
+   lives -- can ever be handed one.
+
+This is stronger than "no parser exists", and it survives the possibility that a
+parser is buried in the group-4 banks: the file cannot get that far.
+
+### What would change the conclusion
+
+* decompiling `FUN_40154ecc` to show it reads lines rather than walking
+  directory entries;
+* a real `M3U.LIB` file, whose record shape would settle path-list vs tag-record
+  directly;
+* the fs driver's extension bit order, which would make the `M3U.LIB` mask
+  decode exact rather than bounded.
+
+Until then, `.m3u` support requires new code: either an extension-array entry
+(purely to make the files visible) *and* a parser, or a different delivery route.
