@@ -24,10 +24,15 @@ The patched bytes are inside the overlay bank whose table entry is at
 `browser.ap` file `0x724` (file offset `0x4300`, load address `0x780DB200`,
 size `0x800`). So `+0x46CC` is guest `0x780DB5CC`, i.e. bank `+0x3CC`.
 
-**Correction to an earlier mapping:** a previous report put this at guest
-`0x40154ECC` by associating the file offset with the wrong bank
-(file `0x4400`). The bank table shows the correct owner is the one at `0x4300` /
-`0x780DB200`, so the guest address is `0x780DB5CC`.
+**Correction to an earlier mapping, and the reason it was wrong.** A previous
+report put the patch at guest `0x40154ECC` by assuming file `0x46CC` sat in the
+bank whose table entry is at `+0x13C` (file `0x4400`, link `0x40154c00`). The bank
+table's **group 4 starts at table offset `0xA00`**, not `0x100`, and the group-4
+entries were skipped. Re-scanning both groups puts the patched bytes in the bank
+at file `0x4300` / link `0x780DB200`, so the guest address is **`0x780DB5CC`**, not
+`0x40154ECC`. The pointer values themselves were always right; only the bank that
+holds the table was wrong. `tools/fw007test.py` now pins the bank-table scan
+across both groups so the same mistake cannot recur.
 
 ## 3. The dispatch structure
 
