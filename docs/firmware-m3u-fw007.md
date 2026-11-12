@@ -169,3 +169,44 @@ fixes does not make this region the M3U parser.
 `playlist.ap` also changes (14 ranges, 137 bytes). Those are separate and are
 the better candidate for playlist parsing, since `playlist.ap` carries
 `M3U.LIB` and `playlist.sty`.
+
+---
+
+## 7. `0x7811B3DC`, the callee the community routine adds (2026-11-12)
+
+Located in the group-3 bank at `browser.ap` file `0x4B00` (link `0x7811B200`,
+size `0x800`); the routine is `+0x1DC`, i.e. file `0x4CDC`, and begins with a
+standard `save 0x30, $ra,$s0-$s1`.
+
+```asm
+0x7811b3dc  save  0x30, $ra,$s0-$s1
+0x7811b3de  lw    $v0, dword_7811B57C
+0x7811b3e0  move  $a1, $a0
+0x7811b3e2  lbu   $a0, 0($v0)          ; load a byte from a state word
+0x7811b3e4  jal   0x7811B240           ; one call only
+0x7811b3e8  zeb   $a1
+0x7811b3ea  lw    $s1, dword_7811B580
+0x7811b3ec  lw    $a1, 0($s1)
+0x7811b3f0  beqz  $a1, ...             ; null-guard on a pointer
+0x7811b3f2  lw    $s0, dword_7811B584
+0x7811b3f4  lhu   $v1, 0($s0)
+0x7811b3f6  cmpi  $v1, 0xFFFF
+0x7811b3fa  btnez ...                  ; reject the sentinel value
+0x7811b3fe  lbu   $a0, 0($v1)
+0x7811b400  sltiu $a0, 9               ; bound-check an index below 9
+0x7811b402  btnez ...
+0x7811b40a  sh    $v1, 0($a3)          ; store a halfword into a table
+...
+0x7811b460  li    $v1, 0x345           ; a constant, not a character
+0x7811b464  sh    $v0, 0($a3)
+```
+
+**Conclusion: this is numeric state processing, not playlist handling.** Every
+access is a halfword or byte at a small offset, the only comparisons are against
+`0xFFFF` and a bound of 9, the only constant is `0x345`, and there is no string
+copy, no path assembly and no `0x0A`/`0x0D` anywhere. It has a null-guard and a
+sentinel check, so its shape is a small state machine over a numeric table.
+
+The single added call in the community routine therefore does **not** establish
+an M3U behaviour either. The community fix set that lands here is some other fix
+from the V1.101.11 lineage.
