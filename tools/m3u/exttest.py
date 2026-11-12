@@ -288,6 +288,16 @@ def main():
                   "browser.ap: %d free slots follow the array (%d bytes), so an"
                   " appended slot does not move any existing index"
                   % (free // 4, free))
+            # The strongest evidence that appending is viable: browser.ap's own
+            # array places real extensions AFTER '** ' slots, so whatever walks
+            # this array does not stop at a wildcard -- otherwise ACT and AIF
+            # would be unreachable.
+            wild = [k for k, e in enumerate(ents) if e.startswith("**")]
+            after = [e for k, e in enumerate(ents) if k > wild[0]
+                     and e and not e.startswith("*")]
+            check(len(wild) >= 2 and "ACT" in after and "AIF" in after,
+                  "browser.ap: real entries (%s) sit after a '** ' slot, so a"
+                  " wildcard does not end the walk" % "/".join(after))
 
     # 10. music.ap carries a shorter, audio-only array of its own
     map_ = load(STOCK, "music.ap")
