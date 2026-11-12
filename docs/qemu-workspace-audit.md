@@ -1190,3 +1190,44 @@ These are addresses, not conclusions. What is still unproven:
 The `m3u_diff.py` + `m16dis.py` + `m3u_audit.py` tooling is in place to settle
 each of those; decompiling `0x40154ECC` and its callees is the next concrete
 step and the only thing that would justify calling this region an M3U parser.
+
+---
+
+## The changed word is a pointer redirection (2026-11-12)
+
+Corrected values (the brief's were slightly off): stock bytes at
+`browser.ap+0x46CC` are `E1 26 41 71`, community `59 26 4D 71`. As little-endian
+u32 these are **not** an instruction pair but a pointer:
+
+| | u32 | MIPS16e entry (bit 0 cleared) | containing bank |
+|---|---|---|---|
+| stock | `0x714126E1` | `0x714126E0` | file `0xD4E0`, addr `0x71412500`, `+0x1E0` |
+| community | `0x714D2659` | `0x714D2658` | file `0xEC58`, addr `0x714D2500`, `+0x158` |
+
+The address sits in a dense table of similar pointers (the surrounding entries
+are `0x71312951`, `0x71412889`, `0x713928F5`, ... — all `0x71xxxxxx`), so this
+is a **bank-relative dispatch table**, not code.
+
+Two facts settle the region's status:
+
+* the stock target `0x714126E0` contains **real code** (2 of 96 bytes zero);
+* the community target `0x714D2658` is **completely blank in stock** (96/96
+  zero) and MIPS16e code in the community build.
+
+So `M30-FW-007` redirects one dispatch-table entry from an existing stock
+routine to a **newly-added routine that only exists in the community build**.
+That answers "which fix owns the region" for the bank change: it is the same
+patch set as the two-byte edit, and the edit is its dispatch hook.
+
+### Still unverified
+
+* what either routine does. The surrounding table entries being pointers means
+  the change selects a handler by index, so the behaviour depends on which
+  dispatch path is taken, and no path has been traced.
+* the stock routine at `0x714126E0` was not decoded far enough to classify.
+
+The decode attempt used QEMU's own MIPS16e translator via the `inject=`
+harness rather than a table, because the GAS-derived table (7,690 entries)
+still has register-combination gaps. That harness is the right instrument; it
+was left working aside from a stub high-half encoding bug that needs fixing
+before the next run.
