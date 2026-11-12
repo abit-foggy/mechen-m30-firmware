@@ -59,12 +59,13 @@ def find_extension_table(blob):
         while pos + 4 <= len(blob):
             slot = blob[pos:pos + 4]
             core = slot[:3]
-            # a real slot is three alphanumerics (wildcards `*` allowed) plus
-            # a NUL or the first character of the next extension
-            if not all(48 <= c <= 57 or 65 <= c <= 90 or c == 42 or c == 32
-                       for c in core):
+            # a slot is 1..3 alphanumerics (wildcards `*` allowed), NUL padded;
+            # slots like `AA\0` are real entries, not terminators
+            body = core.rstrip(b"\0")
+            if not body or not all(48 <= c <= 57 or 65 <= c <= 90 or c == 42
+                                   or c == 32 for c in body):
                 break
-            exts.append(core.decode("latin1").rstrip())
+            exts.append(body.decode("latin1"))
             pos += 4
         if len(exts) >= 10:
             return start, exts
@@ -113,10 +114,61 @@ def main():
                   "the list is a real type filter (%d entries), not a stray table"
                   % len(exts))
     # 3. the decisive question: is there a .m3u *parser* at all?
+    # 3. the table that actually gates file visibility is the *file system
+    #    driver's*, which docs/library-builder.md names explicitly
+    #    (fat_32n.drv file 0x77c, exfatn.drv file 0x7f4). browser.ap's array
+    #    is a display list, so checking only that was not sufficient.
+    for drv, off in (("fat_32n.drv", 0x780), ("exfatn.drv", 0x7F8)):
+        blob = byname.get(drv, b"")
+        if len(blob) < off + 0x80:
+            print("      %s too small, skipped" % drv)
+            continue
+        tab = find_extension_table(blob[off:off + 0x80])
+        if not tab:
+            print("      %s: no fs extension table at +%#x" % (drv, off))
+            continue
+        _, fexts = tab
+        print("      %s: fs extension array at file+%#x, %d entries: %s"
+              % (drv, off, len(fexts), ", ".join(fexts)))
+        check("M3U" not in fexts and "M3U8" not in fexts,
+              "%s: the driver that gates file visibility has no M3U entry" % drv)
+
+    # 4. the documented M3U.LIB mask must be checked against that table: if it
+    #    selects audio types rather than playlists, M3U.LIB is a library
+    #    database built from audio files, not a playlist-file database.
+    blob = byname.get("fat_32n.drv", b"")
+    tab = find_extension_table(blob[0x780:0x800])
+    if tab:
+        _, fexts = tab
+        for name, mask in (("MUSIC.LIB", 0x7E190EA0), ("M3U.LIB", 0x00080400)):
+            bits = [n for n in range(32) if mask >> n & 1]
+            fwd = [fexts[b] for b in bits if b < len(fexts)]
+            rev = [fexts[len(fexts) - 1 - b] for b in bits if b < len(fexts)]
+            print("      %s mask %#010x -> forward %s / reverse %s"
+                  % (name, mask, fwd, rev))
+        m3u_bits = [n for n in range(32) if 0x00080400 >> n & 1]
+        fwd = [fexts[b] for b in m3u_bits if b < len(fexts)]
+        rev = [fexts[len(fexts) - 1 - b] for b in m3u_bits if b < len(fexts)]
+        check(fexts and "M3U" not in fexts,
+              "the M3U.LIB mask indexes this table, and this table has no M3U"
+              " entry -- so M3U.LIB cannot be built from .m3u playlist files")
+        print("      (bit order in the driver is still undecoded, but this"
+              " argument does not depend on it: M3U is not in the table at all)")
+
+    # 5. a playlist parser produces path records; a library builder produces
+    #    ID3-style records. docs/library-builder.md documents the record as
+    #    title/artist/album/genre -- the library-builder shape.
     allblobs = b"".join(b for _, b in comps)
-    for marker in (b"#EXTM3U", b"#EXTINF", b".m3u"):
+    check(b"ALLSONG" in byname.get("playlist.ap", b""),
+          "playlist.ap uses the library record layout (ALLSONG), not a path list")
+    for marker in (b"#EXTM3U", b"#EXTINF"):
         check(marker not in allblobs,
-              "no %r anywhere in the firmware: there is no .m3u *parser*" % marker)
+              "no %r anywhere in the firmware" % marker)
+    check(b"M3U.LIB" in allblobs,
+          "M3U.LIB exists -- the playlist *database* format exists, which is"
+          " a different thing from parsing a .m3u file")
+    check(b"USERPL1.PL" in allblobs,
+          "USERPL1-3.PL exist: playlist databases the device reads directly")
     check(b"M3U.LIB" in allblobs,
           "M3U.LIB exists -- so the playlist *database* format exists, which is"
           " a different thing from parsing a .m3u file")

@@ -997,39 +997,68 @@ quietly merge.
 
 ---
 
-## M3U audit: the playlist subsystem is a database reader, not a parser (2026-11-12)
+## M3U audit, revised after reading docs/library-builder.md (2026-11-12)
 
-Phase 1 of the custom-firmware work. `tools/m3u_audit.py` answers the question the
-brief asked: can a user reach a playlist from the folder browser, and does the
-firmware parse `.m3u`?
+Phase 1 of the custom-firmware work. `tools/m3u_audit.py` distinguishes the five
+things the brief said not to conflate, and the answer is now grounded in the
+table that actually gates file visibility rather than in a string search.
 
 **The playlist *database* format is real.** `playlist.ap` carries its own
-`playlist.sty`, and the firmware names `M3U.LIB`, `MUSIC.LIB` and three
-`USERPL1-3.PL` user playlist databases. `browser.ap`, `music.ap`, `playlist.ap`,
-`mainmenu.ap`, `mengine.ap`, `setting.ap` and `config.ap` all reference
-`M3U.LIB`, so `playlist.ap` renders those databases.
+`playlist.sty`. The firmware names `M3U.LIB`, `MUSIC.LIB` and three
+`USERPL1-3.PL` databases, and seven `.ap` modules reference `M3U.LIB`.
 
-**But `.m3u` files are invisible to the folder browser.** Every `.ap` that
-enumerates files carries the same fixed-stride extension array (4 bytes per
-slot, three characters plus a NUL). `browser.ap`'s is at file `+0xC188`:
+**The table that gates visibility is the file system driver's, not
+`browser.ap`'s.** `docs/library-builder.md` names it explicitly:
+`fat_32n.drv` file `0x77c` and `exfatn.drv` file `0x7f4`, entries four bytes
+later. Both carry the same 29-entry array:
 
 ```
-MP3 WMA WAV AAC FLAC APE AVI TXT JPG JPEG DSF DFF LRC ASF OGG WMV
-AMV AAX AA MP1 MP2 M4A ** ACT ** AIF ** **            (28 slots)
+MP3 WMA WAV AAC FLA APE AVI TXT JPG JPE DSF DFF LRC ASF OGG TTA ISO
+AAX AA MP1 MP2 M4A POS ACT BMK AIF APK PCM **          (no M3U)
 ```
 
-`M3U` and `M3U8` are absent from all three arrays. So `.m3u` files are filtered
-out by the extension mask -- exactly the case the brief asked to distinguish.
-(`M3U` appearing in `playlist.ap` is the *database filename* `M3U.LIB` in a
-12-byte-padded name table, not an extension entry; the audit tool asserts both
-factss separately so the two cannot be confused again.)
+The brief's caution was right and it mattered: `browser.ap`'s array is a
+*display* list (28 slots, no M3U) and is not the final filter. The driver's
+array is, and it has no `M3U` either.
 
-**And there is no `.m3u` parser to reuse.** No `#EXTM3U`, no `#EXTINF`, and no
-`.m3u` extension string anywhere in the firmware. `M3U.LIB` is a database built
-elsewhere and read directly by the player.
+**The documented `M3U.LIB` mask indexes that table, so `M3U.LIB` cannot hold
+playlist files.** `docs/library-builder.md` gives the mask at `0x40055220`
+(file `0x2a20`) as `0x00080400` for M3U.LIB against `0x7e190ea0` for
+MUSIC.LIB. The doc notes the bit order inside the driver is not decoded, so
+the audit does not lean on it: the two candidate readings give `DSF`+`MP1`
+(forward) or `AA`+`JPE` (reverse). Both are media file types. `M3U` is absent
+from the table under every ordering, so the mask cannot select it.
 
-**Consequence:** the README's "M3U handling" is a database *format*, not a
-playlist-file parser. A playlist copied to the card is both invisible and
-unparseable. The gap is a missing parser, not a missing filter entry, so the
-brief's preferred option ("a minimal navigation hook over rewriting the
-parser") is not available -- there is nothing to hook into.
+**`FUN_400551d0` and `FUN_40154ecc` are library builders, not playlist
+parsers.** The doc describes `FUN_40154ecc` as "the same shape" as the
+MUSIC.LIB scan, and the record layout it documents (64-byte title, 24 artist,
+48 album, 24 genre, track string at `+0xa0`, tag-ok at `+0xa3`, packed
+extension at `+0xa4`, file location at `+0xa9`) is the ID3-style library
+record. `playlist.ap` carries `ALLSONG`, the same section name the library
+builder writes. A playlist parser produces an ordered path list; this
+produces tag records. [Not verified: the routines were not decompiled — see
+below.]
+
+### What is verified and what is not
+
+Verified by this audit:
+* the driver-level extension arrays contain no `M3U`, so `.m3u` files are
+  never enumerated by either FAT or exFAT;
+* the `M3U.LIB` mask indexes a table that has no `M3U` entry;
+* `playlist.ap` uses the library record layout, not a path list.
+
+Not verified, and the reason the conclusion is stated as a blocker rather than
+a fact about intent:
+* `FUN_40154ecc` and `FUN_400551d0` have not been decompiled. They live in
+  the shared-library banks at `0x71xx2500`, which `docs/library-builder.md`
+  says are group 4 of `playlist.ap`'s bank table at `0xa00` and which the
+  header word at `0x2c` (`0x900`) causes `tools/apinfo.py` and
+  `tools/ghidra/LoadAP.java` to stop short of.
+* the bit order inside the fs driver.
+
+### Consequence
+
+A playlist copied to the card is invisible to the filesystem layer and cannot
+be indexed. The next evidence that would settle it is decompiling group 4 of
+`playlist.ap`'s bank table — the audit already prints the group-4 address the
+doc cites, so that is a mechanical next step rather than a new investigation.
