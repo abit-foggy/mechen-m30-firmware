@@ -127,3 +127,50 @@ host test supplies the callback and says so.
    resources and `music.mcg` ids 49–53 are unverified.
 3. **Playback dispatch.** Unstarted.
 4. **Firmware integration.** No module is patched and no `.HEX` exists.
+
+
+## The music menu tree (music.mcg), decoded
+
+139 nodes. The top level, and the ids a dispatcher would key on **[card]**:
+
+| node | id | name |
+|---|---|---|
+| NODE1 | 0 | 所有音乐 — All Music (root) |
+| NODE6 | 1 | 主菜单 — Main Menu |
+| NODE15 | 2 | 正在播放(乐库) — Now Playing (music library) |
+| NODE17 | 3 | 上传歌曲音乐(乐库) |
+| NODE65 | 21 | 音乐(列表选择1) |
+| NODE169 | 41 | 随机播放 — Shuffle play |
+| NODE182 | 45 | **所有音乐(列表选择1) — All Songs (list select 1)** |
+| NODE184 | 46 | 正在播放 |
+| NODE188 | 48 | 我的最爱 — My Favourites |
+| NODE192/194/197/200/203 | 49–53 | m3u列表选择1..5 |
+
+So the All Songs reference path is **id 45** in the list-select-1 context, not id 0.
+
+## Third false positive: linear disassembly of an overlay bank
+
+A cluster of `cmpi $rx, imm` at music.ap `+0x1a965` was at first taken for a
+numeric menu-id dispatcher. The immediates are not ids — they are ASCII from a
+**genre-name string table**: `Blues`, `Classic`, `Rock`, `Country`, `Dance`,
+`House`, `Jazz`. IDA was decoding string bytes as instructions because the bank
+was disassembled linearly from its base rather than from its real entry points.
+
+That is the third address-level false positive in this project, after
+`0xbfc16a25` and `0xBFC16BB5`. The pattern they share: **a promising pattern
+found without establishing how the code is actually reached.**
+
+The rule that follows, and it is now the operative constraint on all further
+work: *an overlay bank must not be disassembled linearly.* Its entry points have
+to be established first, from something that is known to call it, or the result
+is string data read as instructions. Genuine tag-reading code does exist in the
+same bank — `0x713d2600` opens with a read and then compares `T`,`A`,`G` at
+`0x713d261a`–`0x713d2632`, an ID3 `TAG` header check — so the bank mixes code
+and tables and only a real entry point separates them.
+
+## What this means for the All Songs trace
+
+It has not been done. The next step is not another scan for immediates: it is to
+find what *loads* bank `0x713d2500` and calls into it, because that caller is
+the real entry point. Until then, nothing in this bank can be cited as the
+selection path.
