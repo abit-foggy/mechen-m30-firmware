@@ -73,6 +73,31 @@ def resident_span(blob):
     return foff, foff + size
 
 
+def find_ap_table(blob):
+    """Locate the *browser's* own extension array, which differs from the
+    driver's: it adds WMV and AMV, orders the entries differently, and closes
+    with **, *f and *d rather than **, *f and three spaces.
+
+    Returns (start, nslots, free_bytes) or None.
+    """
+    i = blob.find(b"MP3\x00WMA\x00WAV\x00")
+    if i < 0 or i % 4:
+        return None
+    pos = i
+    while pos + 4 <= len(blob):
+        text = blob[pos:pos + 4].rstrip(b"\x00")
+        if not text or not all(0x20 <= b < 0x7F for b in text):
+            break
+        pos += 4
+    nslots = (pos - i) // 4
+    # the run of zero slots that follows, which is what an appended entry
+    # would have to live in
+    z = pos
+    while z + 4 <= len(blob) and blob[z:z + 4] == b"\x00\x00\x00\x00":
+        z += 4
+    return i, nslots, z - pos
+
+
 def find_table(blob):
     """Locate the extension slot array by anchoring on 'MP3\\0'.
 
@@ -240,8 +265,54 @@ def main():
     else:
         print("SKIP  community image not unpacked; ran without it")
 
-    # 9. what this means for a patch: an appended slot cannot move anything,
-    #    because every existing slot keeps its offset and the array is
+    # 9. the browser carries its *own* extension array, which is not the
+    #    driver's: it adds WMV and AMV and closes with **, *f and *d. It is
+    #    in a module our build already patches, and it has room.
+    bap = load(STOCK, "browser.ap")
+    if bap is not None:
+        got = find_ap_table(bap)
+        check(got is not None,
+              "browser.ap: its own extension array is present and slot-aligned")
+        if got:
+            start, nslots, free = got
+            ents = [t for t, _ in slots(bap, start, nslots)]
+            check(len(ents) == 31 and nslots == 31,
+                  "browser.ap: %d slots, the last three the wildcards" % nslots)
+            check(ents[-3:] == ["**", "*f", "*d"],
+                  "browser.ap: closes with ** / *f / *d (got %s)" % ents[-3:])
+            check("WMV" in ents and "AMV" in ents,
+                  "browser.ap: adds WMV and AMV, which the driver's array lacks")
+            check("M3U" not in ents,
+                  "browser.ap: no M3U slot, so nothing can select one here either")
+            check(free >= 4 * 16,
+                  "browser.ap: %d free slots follow the array (%d bytes), so an"
+                  " appended slot does not move any existing index"
+                  % (free // 4, free))
+
+    # 10. music.ap carries a shorter, audio-only array of its own
+    map_ = load(STOCK, "music.ap")
+    if map_ is not None:
+        i = map_.find(b"MP3\x00WMA\x00APE\x00")
+        check(i >= 0 and i % 4 == 0,
+              "music.ap: its own audio-only array is present and slot-aligned")
+        if i >= 0:
+            n = 0
+            pos = i
+            while pos + 4 <= len(map_):
+                t = map_[pos:pos + 4].rstrip(b"\x00")
+                if not t or not all(0x20 <= b < 0x7F for b in t):
+                    break
+                pos += 4
+                n += 1
+            ents = [t for t, _ in slots(map_, i, n)]
+            check(ents == ["MP3", "WMA", "APE", "FLA", "OGG", "AAC", "AAX",
+                           "M4A", "AA "],
+                  "music.ap: nine audio slots, closing with 'AA ' (got %s)" % ents)
+            check("M3U" not in ents,
+                  "music.ap: no M3U slot in the audio array either")
+
+    # 11. what this means for a patch: an appended slot cannot move anything,
+    #    because every existing slot keeps its offset and the arrays are
     #    slot-indexed. This is the shape a fix must have.
     print("NOTE  an additive M3U slot would go after the wildcards; it"
           " cannot be inserted anywhere else without shifting indices,")

@@ -59,11 +59,33 @@ about exactly this.
 Slots 28–30 are the wildcards. They are matched as whole words, not as prefix
 patterns, so `**` is a category of its own rather than "anything".
 
+## The browser has its own array, and it has room
+
+`browser.ap` carries a second, *different* extension array at file `+0xc188`,
+and it is not a copy of the driver's:
+
+| Difference | Driver's array | browser.ap's array |
+|---|---|---|
+| Entries | 28 | 31 |
+| Video | — | adds `WMV`, `AMV` |
+| Ordering | `MP3 WMA WAV AAC FLAC APE …` | `MP3 WMA APE FLA OGG AAC AAX M4A AA …` |
+| Wildcards | `**`, `*f`, three spaces | `**`, `*f`, `*d` |
+| Followed by | 504 bytes of zeros, then an 8-byte in-use MIPS16e stub at the end of the bank | 252 bytes of zeros — **63 free slots**, nothing after them |
+
+`music.ap` carries a third, audio-only array of nine slots (`MP3 WMA APE FLA OGG
+AAC AAX M4A AA`).
+
+None of the three contains `M3U`, so none of them can select one. But the
+browser's array is in a module our build already patches (`build.sh` rewrites
+its read limits), and the 63 free slots that follow it are genuinely free: an
+appended slot moves no existing index and collides with nothing.
+
 ## There is no `M3U` slot
 
-Neither driver contains the string `M3U` anywhere, and there is no slot for it,
-so **no mask value can select one**. That is the whole blocker: the library
-type exists, the list view exists, and the enumeration cannot return the files.
+No array anywhere in the image has an `M3U` slot, and no driver contains the
+string `M3U` at all, so **no mask value can select one**. That is the whole
+blocker: the library type exists, the list view exists, and the enumeration
+cannot return the files.
 
 ## Neither shipped release ever added one
 
@@ -81,21 +103,31 @@ existing parser, not a change to what the browser enumerates.
 
 Adding a slot is the only route, and it must be **additive**: append after the
 wildcards, because inserting anywhere else shifts every later index and the
-masks are index-based. The zero run after the terminator has room — 504 bytes
-(126 slots) in `fat_32n.drv`, 384 bytes (96 slots) in `exfatn.drv` — but it
-does **not** run to the end of the bank:
+masks are index-based. Two constraints on *where* the append is safe:
 
-> the last 8 bytes of both resident banks hold `10 6b 05 e8 0f 6b 05 e8`, a
-> small MIPS16e stub pair that is already in use. Its function is undetermined,
-> so an append that assumed "zeros to the end of the segment" would land on it.
+- in the drivers, the zero run after the terminator does **not** reach the end
+  of the bank. Its last 8 bytes hold `10 6b 05 e8 0f 6b 05 e8`, a small
+  MIPS16e stub pair that is already in use, whose function is undetermined. An
+  append that assumed "zeros to the end of the segment" would land on it. The
+  run itself has 504 bytes (126 slots) in `fat_32n.drv` and 384 bytes (96) in
+  `exfatn.drv`.
+- in `browser.ap` the run is 252 bytes (63 slots) with nothing after it, which
+  is the cleanest place to put one.
 
-The unresolved question is the one the wildcards create: slots 28–30 come
-*before* an appended slot 31, and they are matched as whole words. Whether a
-walker reaching `**` classifies every unmatched file — including an M3U one —
-before it ever consults an appended slot is not answerable from the image
-alone. Until it is, the safe position is the one taken here: the layout is
-pinned by a test, the writer that makes playlists exists, and no byte of the
-extension array is modified.
+The unresolved question is the one the wildcards create. The three arrays close
+with `**`, `*f` and a third slot — three spaces in the drivers, `*d` in
+`browser.ap` — and they are matched as whole words. So they look like the
+catch-all categories ("everything", "file", and either "directory" or a
+placeholder) that a walker consults when no real extension matched. Whether a
+walker consults them *before* an appended slot — which is what an append after
+them would require — is not answerable from the image alone. Neither is the
+bit-to-slot order of the masks: `MUSIC.LIB`'s 14 set bits do not map onto the
+audio slots under either endianness of slot numbering, so the mapping is not
+"bit n is slot n" in any obvious direction.
+
+Until either is settled, the position taken here is: the layout is pinned by a
+test, the writer that makes playlists exists, and no byte of any extension
+array is modified.
 
 ## Delivered alongside this
 
