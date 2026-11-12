@@ -174,3 +174,28 @@ It has not been done. The next step is not another scan for immediates: it is to
 find what *loads* bank `0x713d2500` and calls into it, because that caller is
 the real entry point. Until then, nothing in this bank can be cited as the
 selection path.
+
+
+## Overlay structure: shared bank slots
+
+Bank `0x713d2500` is declared by **three** modules, each with its own content at
+the same link address:
+
+| module | file range | size |
+|---|---|---|
+| browser.ap | `0xcb00..0xd300` | `0x800` |
+| mainmenu.ap | `0xd200..0xd900` | `0x700` |
+| music.ap | `0x1a600..0x1add8` | `0x7d8` |
+
+The only references to the base address are the bank-table entries themselves
+(`+0xab8`, the address field of the triple at `+0xab4`) — **no code points at
+it**. That is expected for overlays: the loader places a bank and callers reach
+it either by being inside the same bank, or through an entry point established
+at load time.
+
+This sharpens the rule above. Bank `0x7805b200` had the same property — six
+modules declaring it at `+0x710`, no code references. So "no static references"
+is *normal* for a shared overlay bank and is **not** evidence of dead code, which
+corrects the wording of an earlier finding in this journal. It also means the
+only way in is from a caller that is known to run, which is what the next step
+must establish.
