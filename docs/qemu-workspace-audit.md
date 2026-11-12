@@ -1111,3 +1111,52 @@ parser is buried in the group-4 banks: the file cannot get that far.
 
 Until then, `.m3u` support requires new code: either an extension-array entry
 (purely to make the files visible) *and* a parser, or a different delivery route.
+
+---
+
+## M30-FW-007 localised by binary diff (2026-11-12)
+
+`tools/m3u_diff.py` unpacks the stock 2025-06-26 image and community V1.101.11
+with the same atjboottool pipeline `build.sh` uses, and reports changed byte
+ranges per module. Result — five modules differ; `playlist.ap` 14 ranges / 137
+bytes, `browser.ap` 49 ranges / 1200 bytes.
+
+**The decisive range is in `browser.ap`, not `playlist.ap`.** The community's
+M3U work occupies a contiguous **`0xEC58`–`0xF12F` (about 740 bytes, MIPS16e)**
+region that is **all-zero in stock**. That range sits inside the group-4
+shared-library bank file range `0x5300`–`0xfb00` decoded earlier, and it is the
+largest coherent changed span in the image.
+
+This reframes the earlier string-absence argument. The stock firmware does not
+lack an M3U parser because the code was removed or never written; it ships with
+the region **blank**. Supporting numbers:
+
+| | stock | community |
+|---|---|---|
+| `browser.ap` group-4 region (`0x5300`-`0xfb00`, 43,008 B) | 43.5% zero | — |
+| whole-file zero fill | 44.5% | 43.7% |
+| bytes changed inside that region | — | 1,196 |
+
+Whole-file zero fill is nearly identical, so the blanks are reserved space
+rather than a diff artefact. There is also a two-byte edit in the resident at
+`+0x46CC` (`e1 26` → `59 26`), consistent with a call being redirected into the
+filled bank.
+
+### Answer to the base question
+
+**The stock M30 has no reusable plaintext M3U parser, because the slot that
+would hold it is blank.** A parser therefore has to be written or ported; the
+layout does reserve the space, so the integration point is now known exactly.
+
+### What is verified and what is not
+
+Verified:
+* M30-FW-007 lands in `browser.ap` `0xEC58`-`0xF12F`, plus a 2-byte resident
+  edit at `+0x46CC`.
+* that region is zero in stock and MIPS16e in V1.101.11.
+* it lies inside the group-4 bank file range.
+
+Not verified:
+* the routines have not been decompiled, so the exact parse algorithm, its
+  entry point, and how it is dispatched are unknown;
+* whether the two-byte resident edit is the call that reaches it.
