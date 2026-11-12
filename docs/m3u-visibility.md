@@ -101,6 +101,14 @@ existing parser, not a change to what the browser enumerates.
 
 ## The filter is a category byte, not a bitmask
 
+> **Correction (later in the same investigation).** The location arithmetic
+> transcribed in `tools/fw/m3ufs.c` came from routines at `0x7805b264` and
+> `0x7805b2dc` that **nothing in the image references**. The bank they live in
+> is a shared library bank declared by six modules, its entry is `0x7805b200`,
+> and the only call inside it is `jal loc_7805B200`. Treating that arithmetic
+> as "how the firmware opens a playlist" was never justified, and
+> `tools/fw/m3ufs.h` now says so. See `docs/m3u-integration.md`.
+
 A correction to the section above, from disassembling browser.ap's resident bank
 (guest `0xbfc16400`, file `0xc00`–`0x1234`). The enumeration filter is **not**
 the 32-bit word at `playlist.ap 0x2a20`. That word is stored into a struct field

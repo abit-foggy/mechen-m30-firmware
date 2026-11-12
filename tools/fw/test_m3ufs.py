@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
-"""Tests for the firmware-side location arithmetic (tools/fw/m3ufs.c).
+"""Location-arithmetic and location-layout regression tests.
 
-The arithmetic is transcribed from music.ap 0x7805b264 and 0x7805b2dc. Each
-assertion is checked against the record locations actually stored on the user's
-card, so a transcription error surfaces as a mismatch rather than as a
-plausible-looking number.
+Every assertion is checked against the ten real locations on the user's card,
+so a transcription error or a wrong field split shows up as a failure.
 
-Two independent readings of the same disassembly are compared: the C
-implementation, and the Python in this file. They have to agree, which is what
-makes this a test rather than a restatement.
+The tests pin two separate things, and the distinction matters:
 
-What is tested is the addressing, not a file open. The routine that would turn a
-directory entry into a handle is not traced, and no assertion here pretends it
-is.
+  * the transcription, i.e. that m3ufs.c computes what the disassembly says;
+  * the layout, i.e. which bytes of the 16-byte field carry what -- which the
+    card's own data settles, and which an earlier reading of this session got
+    wrong.
+
+They deliberately do NOT assert that the arithmetic resolves to a file. The
+routines it comes from are unreferenced in the image, and no test here should
+imply otherwise.
 """
 import os
 import struct
@@ -23,22 +24,6 @@ import tempfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.environ.get("M30LIB", "/tmp/m30lib")
 
-
-def split(loc):
-    """The two words the firmware's routines take, from a 16-byte location."""
-    return struct.unpack_from("<I", loc)[0], struct.unpack_from("<I", loc, 12)[0]
-
-
-def cluster(loc):
-    b, e = split(loc)
-    return b + (e >> 5)
-
-
-def entry_off(loc):
-    b, e = split(loc)
-    return (e & 31) * 16
-
-
 DRIVER = r'''
 #include <stdio.h>
 #include "m3ufs.h"
@@ -46,20 +31,18 @@ int main(int argc, char **argv){
     int k;
     for (k = 1; k < argc; k++){
         unsigned char loc[16];
-        unsigned i, v;
+        unsigned i, hi, lo;
         struct m3ufs_loc l;
         for (i = 0; i < 16; i++){
-            unsigned hi, lo;
-            { const char *h = argv[k] + i * 2; char c = *h;
-              hi = (c >= 'a') ? (unsigned)(c - 'a' + 10)
-                              : (unsigned)(c - '0'); }
-            { const char *h = argv[k] + i * 2 + 1; char c = *h;
-              lo = (c >= 'a') ? (unsigned)(c - 'a' + 10)
-                              : (unsigned)(c - '0'); }
+            hi = (*  (argv[k] + i*2)   >= 'a') ? (unsigned)(*(argv[k]+i*2)   - 'a' + 10)
+                                               : (unsigned)(*(argv[k]+i*2)   - '0');
+            lo = (*(argv[k] + i*2+1) >= 'a') ? (unsigned)(*(argv[k]+i*2+1) - 'a' + 10)
+                                             : (unsigned)(*(argv[k]+i*2+1) - '0');
             loc[i] = (unsigned char)((hi << 4) | lo);
         }
         if (m3ufs_split(loc, 16, &l) != 0){ return 2; }
-        printf("%u %u\n", m3ufs_cluster(&l), m3ufs_entry_offset(&l));
+        printf("%u %u %lu %d\n", m3ufs_sector_of(&l), m3ufs_slot_of(&l),
+               m3ufs_byte_offset(&l), m3ufs_slot_is_zero(&l));
     }
     return 0;
 }
@@ -77,22 +60,9 @@ def main():
     locs = [d[0x200 + 256 * i + 0xA9:0x200 + 256 * i + 0xA9 + 16]
             for i in range(n)]
 
-    work = tempfile.mkdtemp(prefix="m3ufs.")
-    drv = os.path.join(work, "drv_m3ufs.c")
-    exe = os.path.join(work, "m3ufs_test")
-    with open(drv, "w") as f:
-        f.write(DRIVER)
-    cmd = ["cc", "-O1", "-Wall", "-Wextra", "-I", HERE,
-           "-I", os.path.join(HERE, "..", "m3u"), "-o", exe, drv,
-           os.path.join(HERE, "m3ufs.c")]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode:
-        print("test_m3ufs: build failed\n" + r.stderr)
-        return 2
-
-    got = subprocess.run([exe] + [l.hex() for l in locs],
-                         capture_output=True, text=True)
-    rows = [l.split() for l in got.stdout.splitlines() if l]
+    # the layout, established by the card's own data
+    const12 = [l[:12] for l in locs]
+    selectors = [struct.unpack_from("<I", l, 12)[0] for l in locs]
 
     rc = 0
 
@@ -102,44 +72,53 @@ def main():
         if not ok:
             rc = 1
 
+    check(len(set(const12)) == 1,
+          "all %d records share their first twelve location bytes (%s), so the"
+          " per-record value is the last four" % (n, const12[0].hex(" ")))
+    check(selectors == [800, 1056, 1280, 1408, 1504, 1632, 1760, 1888, 2016,
+                        2208],
+          "the ten per-record selectors are the expected values")
+    check(all(x % 32 == 0 for x in selectors),
+          "every selector is a multiple of 32, so (arg1 & 0x1F) is zero for all"
+          " of them -- the routines never exercise their own low-bit path")
+    check(selectors == sorted(selectors) and len(set(selectors)) == n,
+          "the selectors are distinct and monotonic in record order")
+
+    # the transcription, checked against an independent reading of the same
+    # disassembly, and against the C implementation
+    def byte_at(l, off):
+        return struct.unpack_from("<I", l, off)[0]
+
+    def sector(l):
+        return byte_at(l, 0) + (byte_at(l, 12) >> 5)
+
+    def slot(l):
+        return (byte_at(l, 12) & 0x1F) << 4
+
+    work = tempfile.mkdtemp(prefix="m3ufs.")
+    drv = os.path.join(work, "drv.c")
+    exe = os.path.join(work, "m3ufs_test")
+    with open(drv, "w") as f:
+        f.write(DRIVER)
+    cmd = ["cc", "-O1", "-Wall", "-Wextra", "-I", HERE, "-o", exe, drv,
+           os.path.join(HERE, "m3ufs.c")]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        print("test_m3ufs: build failed\n" + r.stderr)
+        return 2
+    got = subprocess.run([exe] + [l.hex() for l in locs],
+                         capture_output=True, text=True)
+    rows = [l.split() for l in got.stdout.splitlines() if l]
     check(got.returncode == 0 and len(rows) == n,
           "the C implementation classified all %d real locations" % n)
     if len(rows) != n:
-        print("   got %d rows" % len(rows))
         return 1
-
     for i, row in enumerate(rows):
-        check(row[0] == str(cluster(locs[i]))
-              and row[1] == str(entry_off(locs[i])),
-              "record %d: cluster %s and entry offset %s match the"
-              " disassembly's arithmetic" % (i, row[0], row[1]))
-        check(entry_off(locs[i]) % 16 == 0 and entry_off(locs[i]) + 16 <= 512,
-              "record %d: entry offset %d is a 16-byte slot that fits one"
-              " 512-byte cluster" % (i, entry_off(locs[i])))
-        check(cluster(locs[i]) >= split(locs[i])[0],
-              "record %d: cluster %d is at or beyond the base %d"
-              % (i, cluster(locs[i]), split(locs[i])[0]))
-
-    # the card's own structure: all ten playlists in one directory, with small
-    # monotonic cluster deltas -- that is what makes the addressing meaningful
-    bases = [split(l)[0] for l in locs]
-    raw = [split(l)[1] for l in locs]
-    deltas = [x >> 5 for x in raw]
-    check(len(set(bases)) == 1,
-          "all %d records share one base cluster (%#x), so the ten playlists"
-          " live in one directory" % (n, bases[0]))
-    # every delta is a multiple of 32, so the entry-within-cluster index is 0:
-    # each playlist starts at a cluster boundary. And they are distinct, so the
-    # ten records address ten different positions, not one repeated entry.
-    check(all(x % 32 == 0 for x in raw),
-          "the entry selectors are all multiples of 32 (%s), so each"
-          " playlist's entry sits at a cluster boundary" % deltas)
-    check(len(set(deltas)) == n,
-          "the %d entry selectors are all distinct, so the records address"
-          " %d different positions" % (n, len(set(deltas))))
-    check(deltas == sorted(deltas),
-          "the deltas are monotonic in record order, so records 0..%d are"
-          " directory entries in order" % (n - 1))
+        check(row[0] == str(sector(locs[i])) and row[1] == str(slot(locs[i])),
+              "record %d: sector %s and slot %s match the disassembly"
+              % (i, row[0], row[1]))
+        check(row[3] == ("1" if slot(locs[i]) == 0 else "0"),
+              "record %d: slot_is_zero is %s" % (i, row[3]))
 
     print("test_m3ufs: %s" % ("OK" if rc == 0 else "FAILED"))
     return rc

@@ -1,4 +1,6 @@
-/* Firmware-side M3U file resolution. See m3ufs.h for the derivation. */
+/* Firmware-side location arithmetic. See m3ufs.h for what is and is not
+ * established -- in particular, these routines are unreferenced in the image,
+ * so none of this describes live behaviour. */
 #include "m3ufs.h"
 
 static unsigned rd32(const unsigned char *p)
@@ -9,31 +11,34 @@ static unsigned rd32(const unsigned char *p)
 
 int m3ufs_split(const unsigned char *loc, unsigned len, struct m3ufs_loc *out)
 {
-    if (!loc || !out || len < 8) {
+    if (!loc || !out || len < 16) {
         return -1;
     }
+    /* arg0 is the first word; arg1 the last, per the layout the card shows */
     out->base = rd32(loc);
-    /* the entry index is the 32-bit word at +4, but only the low 5 bits that
-     * select an entry within a cluster are used by the firmware's arithmetic,
-     * and the upper bits are a cluster delta */
     out->entry = rd32(loc + 12);
     return 0;
 }
 
-unsigned m3ufs_cluster(const struct m3ufs_loc *l)
+unsigned m3ufs_sector_of(const struct m3ufs_loc *l)
 {
     /* 0x7805b270-0x7805b27a: arg0 + (arg1 >> 5) */
     return l->base + (l->entry >> 5);
 }
 
-unsigned m3ufs_entry_offset(const struct m3ufs_loc *l)
+unsigned m3ufs_slot_of(const struct m3ufs_loc *l)
 {
     /* 0x7805b27c-0x7805b286: (arg1 & 0x1F) << 4 */
-    return (l->entry & (M3UFS_ENTRIES_PER_CLUSTER - 1)) * M3UFS_ENTRY_BYTES;
+    return (l->entry & 0x1F) << 4;
 }
 
-unsigned long m3ufs_sector_offset(const struct m3ufs_loc *l)
+unsigned long m3ufs_byte_offset(const struct m3ufs_loc *l)
 {
-    /* 0x7805b28c-0x7805b290: cluster << 8, then << 1, i.e. cluster * 512 */
-    return (unsigned long)m3ufs_cluster(l) * M3UFS_CLUSTER_BYTES;
+    /* 0x7805b28c-0x7805b290: sector << 8, then << 1 */
+    return (unsigned long)m3ufs_sector_of(l) << 9;
+}
+
+int m3ufs_slot_is_zero(const struct m3ufs_loc *l)
+{
+    return m3ufs_slot_of(l) == 0;
 }
