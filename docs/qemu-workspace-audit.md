@@ -914,3 +914,83 @@ BSS pre-filled with `0xFF`, a monitor dump after 2.5 s still reads
 `.drv`/`.ap` resident descriptor in FWIMAGE: none spans `0xBFC045F4`–`0xBFC08845`.
 So the ~17.6 KB MIPS16e region is genuinely unrepresented in the unpacked
 firmware, and its code must come from a boot stage this analysis cannot see.
+
+---
+
+## Fast boot: early init trace and the first substitute (2026-11-12)
+
+### Phase 1 — the earliest initialisation sequence, measured
+
+`tools/qemu/ktrace.py` turns a bounded `-d in_asm,cpu,int` run into a report of
+every block the guest executes before its first exception, with the argument
+registers as they stood at entry. The sequence is:
+
+| block | sp | ra | note |
+|---|---|---|---|
+| `0xbfc00000` | `0x00000000` | `0x00000000` | prologue; saves hit the boot stack |
+| `0xbfc00030` | `0x9fc2f000` | `0x00000000` | KER_INIT still on the boot stack |
+| `0xbfc00034` | `0x9fc29000` | `0x00000000` | KER_INIT installs its own sp |
+| `0xbfc32224` | `0x9fc29000` | **`0xbfc00040`** | the first call, `jal` from `0xBFC00038` |
+| `0xbfc3223c` | `0x9fc29000` | `0xbfc00040` | inside the handler, past the `beqz` |
+| `0xbfc06d6c` | `0x9fc29000` | `0xbfc00040` | the dispatcher |
+
+At entry to the first call: **`v0 = 0x00000001`** (the clock read-OR'd with 1),
+`v1 = 0xC012001C`, `s8 = 0x9FC2EFE8`, and **`Status = 0x00400004` with
+`Cause = 0x00000000` and `EPC = 0x00000000`**. At the dispatcher, `k0` holds
+`0xBFC00040` (the saved `$ra`) and `k1` the dispatcher address.
+
+So the first kernel call is the exception-system's context-save entry, and
+because `Cause` is 0 the dispatcher indexes table entry 0.
+
+### Phase 3 — the BSS-clearing hypothesis is confirmed, and substituted
+
+The call at `0xBFC00050` (after `lui v0,0xbfc0; addiu v0,v0,0x45f5`) reaches
+`0xBFC045F4` with **`a0 = 0x9FC13D00`, `a1 = 0`, `a2 = 0xE0`**, i.e. a 224-byte
+clear starting at `0x9FC13D00`. That is exactly the expected BSS fill.
+
+Fast boot (`-machine m30,fastboot=on`) fills the *callee slot* at `0xBFC045F4`
+with a 12-byte MIPS16e `fill(a0,a1,a2)` assembled from GAS. The caller's `jalr`,
+argument setup, return address and ISA mode are untouched real firmware, so from
+KER_INIT's side it is an ordinary call. Verified by `fastboottest.py`:
+
+* the target range is zeroed, and memory both before and after a dirtied
+  0x400-byte span is left exactly as it was,
+* the fill entry executes in three blocks (entry, loop body, return),
+* KER_INIT continues to `0xBF00060`, the block after the call,
+* **with fast boot off the same transfer happens but the memory stays dirty** —
+  the difference is the whole point of the mode,
+* `fastboot=on` on its own leaves the executed block set identical to plain
+  boot, because the slot is unreachable while the first call still fails.
+
+**Progress achieved:** with fast boot plus a clearly-labelled diagnostic bypass
+for the first call, KER_INIT advances past the BSS clear and reaches
+**`0xbfc322f8`, real `ker_xsys.bin+0x130` firmware**, which tail-calls
+`0xBFC05F90` — a region nothing places. That is a new verified firmware basic
+block beyond the previous failure point (`0xbfc32224` → `0xbfc06d6c` only).
+
+### Phase 4 — `0xBFC32224`: what it does, and why it was not bypassed silently
+
+The block is resident `ker_xsys.bin+0x5C`, and the firmware there does
+observable work before dispatching:
+
+1. `lb k0, 0x9FC1A482`; if the flag is non-zero, store `sp-176` to `0x9FC1A8A0`
+2. `mfc0 k0,$14` → save EPC to `0x13DD8`
+3. `move k0,ra` → save `$ra` to `0x13DDC`
+4. `jr` to the dispatcher, which indexes the table by `Cause & 0x7c`
+
+Steps 1–3 execute as real firmware and are left alone. Step 4 selects entry 0
+(`Cause` is 0), which is `0x5C082D13` → unmapped `0x5C082D12`. That pointer is
+firmware, so replacing it would be patching the firmware's own dispatch table,
+and the handler that belongs there is absent. **No fast-boot substitution was
+made for this call.** The only bypass available is a diagnostic `jr $ra` stub
+applied through `inject=`, and it is deliberately kept out of fast boot: the
+test asserts fastboot places nothing but the fill routine, so the two can never
+quietly merge.
+
+### What is original firmware vs emulated
+
+* original firmware executed: the whole prologue, the clock RMW, the fill
+  call site and arguments, `ker_xsys.bin+0x130` at `0xBFC322F8`.
+* emulator-supplied: the 12 bytes at `0xBFC045F4` only, and only in fast-boot
+  mode. It models one fill operation — no dispatch, no vector, no bank
+  loading, and no register it does not already own.
