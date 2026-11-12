@@ -838,3 +838,79 @@ and load addresses. A candidate would have to be derived from the firmware, and
 no such derivation survived checking, so **no fast-boot placement for that region
 was implemented**. The existing loader, `boottest.sh` and `kernelmaptest` are
 unchanged and still pass; `m30.c` is byte-identical to its last committed state.
+
+---
+
+## MIPS16e correction, test injection, and pointer classification (2026-11-12)
+
+### 1. The previous MIPS16e disassembly was invalid — here is why
+
+Two decoders were tried and both are wrong for MIPS16e:
+
+* `mips64-linux-gnu-objdump -m mips:micromips` decodes **microMIPS**, a different
+  encoding. It prints `.short` for most MIPS16e halfwords, so the "incoherent
+  disassembly" of `kernel.drv`'s tail proved only that the wrong decoder was used.
+* QEMU's `-d in_asm` **translates** MIPS16e correctly (its `24Kc` model has
+  `ASE_MIPS16`, and JR/JALR/JALX switch ISA mode from bit 0 of the target), but its
+  disassembler never prints it: `print_insn_mips16()` is inside `#if 0` in
+  `disas/mips.c`, and `mips16_opcodes` is not linked at all. So `-d in_asm` shows
+  MIPS32-style output while the CPU is executing MIPS16e.
+
+What *was* valid from that path: PC advancing by 2 and `hflags` M16 behaviour,
+which is how MIPS16e execution was first observed.
+
+`tools/qemu/m16dis.py` now decodes MIPS16e from a table **derived from GAS**
+(`mips64-linux-gnu-as -mmips16 -EL`, 3013 encodings), not from a decoder that
+guesses. `tools/qemu/m16distest.py` round-trips a freshly assembled function
+containing instructions that were never used to build the table: 0 undecoded,
+mnemonics reproduced exactly. The three encodings all earlier analysis leaned on
+are pinned by the test: `jr $ra` = `0xE820`, `nop` = `0x6500`,
+`addiu $sp,$sp,-24` = `0x63FD`.
+
+**Reinspecting `kernel.drv` with the validated decoder:** the unplaced tail
+`0x14F4-0x3200` does not decode as coherent MIPS16e (the first halfwords are not
+in the table), and the MIPS16e `jr $ra` markers it contains fall in the same
+places as before. Combined with the behavioural test below, this region is not
+the missing kernel text.
+
+### 2. Non-destructive test injection (`-machine m30,inject=...`)
+
+`map=` replaces the whole firmware loader, which made load-address experiments
+unreliable. `inject=` instead applies semicolon-separated `ADDR:PATH+FOFF:SIZE`
+overlays **after** the standard load, validating physical ranges, source bounds
+and reporting every byte the write changes. Validated by
+`tools/qemu/injecttest.sh`:
+
+* an identity injection of `ker_xsys.bin` back at `0xBFC321C8` leaves the
+  translated-block set identical (25 blocks, `diff` clean);
+* an out-of-bounds source, an unmapped destination and a malformed entry are
+  each rejected with a message rather than silently ignored;
+* overwrites print old and new values, so overlaps are visible.
+
+### 3. Address classification, with provenance
+
+| value | class | produced by | bit 0 | bank bits |
+|---|---|---|---|---|
+| `0xBFC045F5` | **verified absolute** | KER_INIT at `0xBFC00050`: `lui v0,0xbfc0; addiu v0,v0,0x45f5` then `jalr` | MIPS16e | none |
+| `0xBFC04635` | **verified absolute** | KER_INIT's general vector at `0xBFC00380`: `lui v0,0xbfc0; addiu v0,v0,0x4635` then `jalr` | MIPS16e | none |
+| `0xBFC064B0` | **absolute, table-loaded** | plain u32 in `kernel.drv`'s data segment (`0x9FC1A400..0x9FC1ABF4`), 32 occurrences | no | none |
+| `0x1F00..0x2F20` (low half `0x9xxx`) | **tagged / unresolved** | `ker_text.bin`'s table: high half steps by 4 (bank index), low half always odd and always `0x9000-0x9FFF` (window `0x9000` + in-bank offset + ISA bit) | MIPS16e | high half, unresolved |
+
+This matches `kilicdev/actions_flash`'s `RE_NOTES.md` pointer encoding
+(`tag | window_base | in_bank_offset | isa_bit`), though the M30's bank→file
+mapping is unverified and is not assumed to be identical.
+
+### 4. The `0xBFC045F5` memset hypothesis: confirmed, then failed on candidates
+
+Injecting `jr $ra` at `0xBFC32224` makes KER_INIT continue, and it then reaches
+`0xBFC045F4` with **`a0 = 0x9FC13D00`, `a1 = 0`, `a2 = 0xE0` (224)** exactly as the
+brief hypothesised. So that address really is the BSS-clear entry.
+
+Placing `kernel.drv[0x14F4:0x1D0C]` at `0xBFC045F4` does **not** clear it: with the
+BSS pre-filled with `0xFF`, a monitor dump after 2.5 s still reads
+`ff ff ff ...` at physical `0x1FC13D00`. That candidate is ruled out.
+
+**No component declares a load address covering `0xBFC045F4`.** Enumerating every
+`.drv`/`.ap` resident descriptor in FWIMAGE: none spans `0xBFC045F4`–`0xBFC08845`.
+So the ~17.6 KB MIPS16e region is genuinely unrepresented in the unpacked
+firmware, and its code must come from a boot stage this analysis cannot see.
