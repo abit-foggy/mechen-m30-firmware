@@ -99,6 +99,41 @@ Comparing stock against community V1.101.11:
 CRLF/LF line-ending fix isolated in `docs/firmware-m3u-fw007.md` — a fix to the
 existing parser, not a change to what the browser enumerates.
 
+## The filter is a category byte, not a bitmask
+
+A correction to the section above, from disassembling browser.ap's resident bank
+(guest `0xbfc16400`, file `0xc00`–`0x1234`). The enumeration filter is **not**
+the 32-bit word at `playlist.ap 0x2a20`. That word is stored into a struct field
+at `0xbfc1673a` and never has its bits tested in the function that loads it.
+
+What actually decides enumeration is a walker at guest `0xbfc168a0`:
+
+```
+0xbfc168a2  lw   $a0, [0x9fc15574]      ; file count
+0xbfc168ac  lw   $s0, [0x9fc15584]      ; node array base (a RAM pointer)
+0xbfc168b2  sll  $a2, $v0, 4            ; node stride is 16 bytes
+0xbfc168b6  lbu  $a1, 1($s0)            ; node+1 = type, must be 1
+0xbfc168c6  lbu  $v1, 5($s0)            ; node+5 = category
+0xbfc168c8  lbu  $a1, 0($a2)            ; the active filter
+0xbfc168ca  xor  $a1, $v1               ; node passes if equal...
+0xbfc168ce  cmpi $v1, 0xFF              ; ...or if category is 0xFF
+0xbfc168d0  btnez                       ;   0xFF = matches any filter
+0xbfc16912  lw   $v0, 0xC($s0)          ; node+12 = per-node callback
+0xbfc16914  jalrc $v0                   ; invoked per passing node
+```
+
+So the answers to Phase 3's questions 1–3 are: the mapping is **not** a 32-bit
+mask; `0xFF` is the wildcard; and the walker count comes from a RAM global, so
+there is no fixed table length in the image. The node array itself is built at
+runtime, which is why nothing in the firmware image references the extension
+arrays by absolute address.
+
+One decoding trap worth recording: `0xbfc16a25`, which five call sites load as a
+pointer, is **not a routine**. It is the second byte of `li $v1,15 ; break` at
+`0xbfc16a24`, the sixth entry of an eight-entry trap table at
+`0xbfc16a10`–`0xbfc16a30`. Those loads are error paths, and treating
+`0xbfc16a25` as a call target is what made the call graph unresolvable.
+
 ## What a fix must therefore do, and the open risk
 
 Adding a slot is the only route, and it must be **additive**: append after the
