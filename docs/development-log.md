@@ -229,3 +229,40 @@ it from the unpacked component.
 is unresolved, and guessing it would corrupt the record in place. That is the
 one thing standing between the host chain and a firmware adapter, and it is one
 RAM address to trace rather than a bank to search.
+
+## Session 11 — the dispatch table's bounds and the get_location caller
+
+Task A resolved a discrepancy rather than leaving it: the dispatch table in bank
+`0x7a052d00` has **eight** entries, not five — the earlier count simply stopped
+where the dump stopped. All eight resolve to valid banks, in three bank-pairs, so
+the table is grouped by subsystem. The driver's base `0x7A0530B4` is **entry 3**,
+so the two addresses were both right: one is the table start, the other is where
+the driver's indexed subset begins. The effective range matters — the driver has
+exactly five reachable handlers, because indices past 4 read the bank's zero tail
+and would call address 0 (`5a3da6c`).
+
+Task B produced the session's two most useful results. First, **the engine's
+shared state block** `0x9FC15F20..0x9FC15F38` is named by roughly 22 mengine
+banks — all of them — and its most-referenced members are the u16 pair
+`0x9FC15F24`/`0x9FC15F26`, the same field shape as the 16-byte location in the
+`M3U.LIB` records at `+0xa9`. That reframes the adapter: put the selected track's
+location there and tell the engine to play, rather than reimplementing file
+handling (`eb6cb25`). Recorded in `firmware-api.md` as the target interface, with
+an explicit note that it does **not** authorise poking the block, because no
+writer was traced (`61d932e`).
+
+Second, **`get_location`'s caller** (`b1e8bd2`). `0x7A052E64` reads the u16 at
+`0x9FC15F24` and returns immediately if it is zero — so that field is the
+"a file is current" guard — then indexes the table from its start, which means
+**mode 0 selects get_location**. It also explains the two dispatchers as two
+views of one table rather than a discrepancy.
+
+A fourth non-instruction terminal target was caught and bounded rather than used:
+the bank entry `0x7A052D00` reads the mode byte and dispatches, but following its
+decode leads to `jalrc` into a RAM address, so it needs a second anchor. The rule
+that keeps recurring — **a decode whose terminal target is not an instruction is
+not yet a decode** — is recorded with it.
+
+Still unwritten: the adapter. `0x7A052E64` calls `table[mode]` with its own
+arguments, so `get_location`'s real argument source is the caller *of*
+`0x7A052E64`, and that one link was not traced. It is one pool search.
