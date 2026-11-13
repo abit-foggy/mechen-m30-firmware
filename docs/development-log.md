@@ -136,3 +136,32 @@ upstream-documented address exactly.
 
 Next: disassemble `0x400552A0` and follow it toward the mask table and the
 selection path.
+
+## Session 8 — status dispatch, not menu dispatch
+
+Step 1 paid off immediately and corrected the previous report: bank `0x40054c00`
+differs per module. music.ap's copy holds real code at `+0x6a0` and **no masks**;
+playlist.ap's holds the documented mask table at `+0x620` and is **zero** at
+`+0x6a0`. The earlier claim that the entry path reaches the mask table was an
+address-transfer error and is withdrawn (`73d6c37`).
+
+Step 2 decoded both functions. `0x400552A0` is `u16 f(u8 arg)`: stores `arg` to
+the RAM global `0x9FC15436`, gates on an in-bank call, returns `0x8006` on the
+failure path, and hands the code to `0x40614FC0` in another bank — the first
+cross-bank `jal` verified on a live path. `0x40614FC0` is `save 0xD0` and
+dispatches on a 16-bit status code.
+
+Step 3 disconfirmed my own hypothesis. The dispatcher compares exactly six
+codes — `0x8000`, `0x8006`, `0x800F`, `0x8010`, `0x8015`, `0x861C` — and **not**
+one menu id: no `0x802D` for All Songs (id 45), none of `0x8031`–`0x8035` for the
+`m3u` slots. `0x861C` is `0x8600 + 0x1C` and the README documents kernel function
+`0x1C` as the millisecond clock, so the family is service result codes, and the
+pair is "compute a status, dispatch on it". Recorded as a disconfirmation rather
+than reshaped into a menu finding (`9c36c35`).
+
+The live lead is narrow and specific: `0x9FC15436` is a **music.ap-private**
+global — referenced from eight places in music.ap and from nowhere in
+playlist.ap, browser.ap or mainmenu.ap — and it sits just past the declared data
+segment (`0x9fc15400..0x9fc15414`), so it is undeclared app scratch. `0x400552A0`
+writes its argument there, which makes it the state the menu selection feeds.
+Tracing its readers is one address, not a bank.

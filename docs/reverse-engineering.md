@@ -292,6 +292,19 @@ music.ap 0x40014C00 ──jal──► 0x400552A0     bank 0x40054c00, +0x6a0
 **The All Songs handler is still not found.** This pair is status dispatch, and
 the menu path remains open.
 
+### The live lead: `0x9FC15436`
+
+`VERIFIED`. A music.ap-**private** RAM global: referenced from eight places in
+music.ap (`+0x1754`, `+0x1a88`, `+0x1af0`, `+0x2050`, `+0x2624`, `+0x32f0`,
+`+0x3fa0`, `+0x5710`) and from **nowhere** in playlist.ap, browser.ap or
+mainmenu.ap. It sits just past music.ap's declared data segment
+(`0x9fc15400..0x9fc15414`), so it is undeclared application scratch rather than
+declared data.
+
+`0x400552A0` writes its argument there, which makes this the state a selection
+feeds. Its eight readers are the next thing to enumerate, and they are one
+address rather than a bank.
+
 ### Entry `0x40014C30` — decoded, `VERIFIED`
 
 Initialisation, not an event loop:
