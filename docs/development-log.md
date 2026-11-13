@@ -266,3 +266,39 @@ not yet a decode** — is recorded with it.
 Still unwritten: the adapter. `0x7A052E64` calls `table[mode]` with its own
 arguments, so `get_location`'s real argument source is the caller *of*
 `0x7A052E64`, and that one link was not traced. It is one pool search.
+
+## Session 12 — the mask is live, and the engine names its drivers
+
+Three results that materially change the shape of the resolver.
+
+**The extension mask is live** (`86ec8c5`). A function in bank `0x60050d00`
+publishes the documented `MUSIC.LIB` mask `0x7e190ea0` into the RAM global
+`0x9FC15D90` and then drives dispatcher A. That closes the question of whether
+the masks are dead data — they are not. The same function calls filesystem
+module `0x11` **function 2**, not 3, which shows the module's functions are
+distinct operations. The pool was found by resolving pool words to the
+instructions that load them, not by scanning for the mask value: the value
+appears in fifteen pools across the image and a scan would have found the
+literal without the writer.
+
+**The record preparer** (`72e1e59`). `mengine.ap:0x7A012D00` is the stage the
+interface calls before the dispatcher. It clears `*[0x9FC15F21]`, invalidates
+`*[0x9FC15F34]` to `-1` — making that context per-operation rather than a
+persistent handle — null-guards its record argument, and calls filesystem module
+`0x11` through a **second** stub (`0xbfc11cc0`) with `(0x9FC15F38, record, 8,
+0)`. A length of 8, where `get_location` uses the other stub with function 3. It
+then validates the record's own bytes: `arg0[1] & 0xF0` becomes a boolean at
+`0x9FC15F23`, and `arg0[3] < 8` gates a path. It is **not** the mode writer.
+
+**The driver-name table** (`387f129`). At `0x7A013084`, at 12-byte stride, sit
+`nand.drv`, `card.drv`, `cards.drv` and `uhost.drv` — the four storage backends.
+The preparer's pool names the first slot and one-past-the-last, which is the
+shape of a search loop. So the engine addresses a file as **driver + path**, not
+a bare pathname, and two u16s is exactly a cluster-and-offset pair once the
+driver is chosen. That explains `0x9FC15F24`/`0x9FC15F26`.
+
+Combined, the resolver's shape is now: validate the record's bytes 1 and 3, call
+`get_location`, then play. Both filesystem calls are verified, the descriptor
+layout is cross-validated, and the only thing still missing is the ordering of
+`get_location`'s three pointer arguments — which comes from the caller of
+`0x7A052E64`, whose pointer appears three times in mengine.ap.
