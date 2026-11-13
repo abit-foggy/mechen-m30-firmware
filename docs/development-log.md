@@ -186,3 +186,46 @@ near-miss with the rule it teaches.
 Net for the session: the `0x9FC15436`/`0x40614FC0` path is closed as
 status-dispatch with no established reader, and neither recovered function gives
 an interface the M3U code can call. No firmware integration, no `.HEX`.
+
+## Session 10 — the browser chain and the engine dispatch table
+
+Sustained block from the documented state. Two independent chains recovered,
+both anchored at module headers.
+
+**Browser.ap** (`4f4a3b9`, `a19bddc`). Header `+0x40` gives `0x40014C31`
+→ `0x40014C30`, and the entry banks of music.ap and browser.ap are
+**byte-identical code differing only in four pool words** — a shared entry
+template. The entry **registers a callback with the kernel**: it builds a
+four-field struct whose first field is a MIPS16e function pointer and passes its
+address to kernel module `0x0f` function `0x4A`, with cleanup at module `0x10`
+fn `0x11` and kernel fn `0x34`. The registered function `0x40055174` is an
+**event loop** on a flag at `0x9fc154d4`; flag 1 reaches `0xBFC16578` (state
+dispatch on `0x9fc154dc`) and falls through to `0xBFC164B4`, a **path builder**
+that hands `':'` and `'/'` to a service in bank `0x7805b200`. Flag 2 reaches
+`0x4009508C`, which calls `0x40C14C00` with a `{1,3,0,0,0}` descriptor and a
+`0x6002` code. **The chain is bounded there deliberately**: `0x40C14C00`'s body
+would call `0x48454841`, the ASCII at bank `+0x280`, so one linear pass cannot
+distinguish a mis-resolved operand from a bogus call. That is the same failure
+mode as the genre table, caught before it produced a false edge.
+
+**mengine.ap** (`d87876c`, `5ed836d`, `062408b`). A genuine **dispatch table** in
+bank `0x7a052d00` at `+0x3a8`, five MIPS16e pointers all resolving to valid
+banks. `0x7b06856c` — the upstream docs' `get_location` — is the
+**record → file operation**: it calls the filesystem module `0x11` (stub
+`0xbfc11ccc` verified as `li $v1,0x11 ; break`) with function `3`, and on success
+fills the record's `+0`, `+1`, `+4`, `+0x5C`, `+0x5E`. A **second witness** in a
+different bank, `0x7b228118`, reads the same five globals and writes the same
+four offsets with no filesystem call — so the descriptor layout has multi-witness
+support and neither function can be a mis-decode of the other. And
+`0x7A052E34` is the **driver that uses the table**: it reads a mode byte from
+`0x9fc15f20`, indexes a table whose real base is `0x7A0530B4`, and calls the
+handler with the caller's own arguments. That corrected the table base, which an
+earlier note had wrong.
+
+**Pinned** by `tools/fw/test_m3uengine.py` (`fc401e6`), which re-derives all of
+it from the unpacked component.
+
+**No adapter written**, deliberately: `get_location`'s filesystem argument order
+is unresolved, and guessing it would corrupt the record in place. That is the
+one thing standing between the host chain and a firmware adapter, and it is one
+RAM address to trace rather than a bank to search.
