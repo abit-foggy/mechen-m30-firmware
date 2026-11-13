@@ -109,3 +109,30 @@ Net: two claims withdrawn, one rehabilitated, and a bank-table scan range
 corrected. `docs/architecture.md`, `reverse-engineering.md` and `firmware-api.md`
 now carry the corrected model with the old wording marked as withdrawn rather
 than deleted.
+
+## Session 7 — the entry point, found
+
+The upstream research was the unlock. Three things this project had wrong, all
+now corrected and committed (`0c0c1ec`, `5e624e0`):
+
+1. `li v1,MODULE ; break` are **syscall stubs**, not trap addresses.
+2. Overlay loading is **demand-driven** — a call into an unloaded bank raises an
+   exception and the kernel loads and retries — so "no static references" proves
+   nothing about reachability.
+3. The bank table has **five+ groups to 0x1000**, in blocks of 64, where this
+   project scanned two. The missed groups held the entry point.
+
+**First verified runtime call chain.** `music.ap`'s header `+0x40` holds
+`0x40014C31`; clearing the MIPS16e ISA bit gives the entry `0x40014C30`, in bank
+`0x40014c00` (size `0xcc`), prologue `save 0x30` with two saved arguments. Its
+pool gives a kernel syscall (module `0x0f`, fn `0x33`), a module-`0x10` syscall,
+and the sibling at `0x40014C00` which calls `0x400552A0` — in bank `0x40054c00`,
+**the same bank the library builder documents the extension mask table in** at
+`0x40055220`.
+
+The ISA-bit convention is what made the syscall stubs legible and retires the
+off-by-one: `0xBFC16BB1` → stub `0xBFC16BB0` = module `0x0f`, matching the
+upstream-documented address exactly.
+
+Next: disassemble `0x400552A0` and follow it toward the mask table and the
+selection path.
