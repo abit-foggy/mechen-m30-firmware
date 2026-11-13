@@ -444,3 +444,81 @@ The body needs re-derivation from a second anchor before any of it is cited.
 `0x400552A0` → `0x40614FC0` is a compute-a-status-then-dispatch pair, and the
 status slot it writes is only reachable by an unestablished reader. **Neither
 gives an interface our M3U code can call.**
+
+## VERIFIED mengine.ap: the engine dispatch table and `get_location`
+
+The strongest result of the engine investigation, and the first genuine dispatch
+table found. Every pointer below resolves to a valid bank and carries the
+MIPS16e ISA bit.
+
+```text
+mengine.ap bank 0x7a052d00 (file 0x5600, size 0x638), table at +0x3a8
+
+  [0] 0x7a0530a8 = 0x7b06856d → 0x7b06856c   bank 0x7b068000  (get_location)
+  [1] 0x7a0530ac = 0x7b228119 → 0x7b228118   bank 0x7b228000
+  [2] 0x7a0530b0 = 0x7b1283ad → 0x7b1283ac   bank 0x7b128000
+  [3] 0x7a0530b4 = 0x7b0685f5 → 0x7b0685f4   bank 0x7b068000  (adjacent to [0])
+  [4] 0x7a0530b8 = 0x7b2281b9 → 0x7b2281b8   bank 0x7b228000
+```
+
+`VERIFIED` by bank-table resolution of all five targets. Entries 0 and 3 are in
+the same bank 0x88 bytes apart; 1 and 4 share bank 0x7b228000.
+
+### `mengine.ap:0x7b06856c` — the record-to-file operation
+
+`VERIFIED` by anchored disassembly. It is the function the upstream docs call
+`get_location`, and it is the **record → file resolution** this project has been
+looking for:
+
+```text
+0x7b06856c  save 0x28, $ra,$s1
+0x7b068570  [0x10($s1)] = $a0          ; arg0 = a record/struct pointer
+0x7b068574  [0x14($s1)] = $a1          ; arg1 = a byte
+0x7b068576  struct->4 = *[0x9fc15f28]  ; [pool 0x7B0685D8]
+0x7b06857e  $a0 = *[0x9fc15f34]       ; [pool 0x7B0685DC]
+0x7b068586  sw 3, 0x10($sp)           ; 5th arg = 3
+0x7b068596  jalrc [0x7B0685E0]        ; = 0xBFC11CCD → FILESYSTEM syscall,
+                                       ;   module 0x11, stub at 0xbfc11ccc
+                                       ;   verified 'li $v1,0x11 ; break'
+            ; (*[0x9fc15f34], struct+0x10, struct+8, 0, 3)
+0x7b06859e  if (zeb(result) == 0) → return 0        ; failure
+0x7b0685a8  struct->0    = [0x9fc15f38][3]          ; [pool 0x7B0685E4]  byte
+0x7b0685b6  struct->1    = *[0x9fc15f22]            ; [pool 0x7B0685E8]  byte
+0x7b0685be  struct->0x5C = *[0x9fc15f26]            ; [pool 0x7B0685EC]  u16
+0x7b0685c8  struct->0x5E = *[0x9fc15f24]            ; [pool 0x7B0685F0]  u16
+0x7b0685cc  return 1
+```
+
+So: it takes a record pointer, asks the **filesystem** to resolve it (module
+`0x11`, function `3`), and on success fills the struct with the file's location
+— including the **u16 pair at `+0x5C`/`+0x5E`**, which is the same field shape
+as the 16-byte location in the `M3U.LIB`/`MUSIC.LIB` records at `+0xa9`.
+
+The globals it reads form one contiguous block:
+
+| global | read as | fills |
+|---|---|---|
+| `0x9fc15f28` | word | `struct+4` |
+| `0x9fc15f34` | word | argument to the fs syscall |
+| `0x9fc15f38` | byte `[3]` | `struct+0` |
+| `0x9fc15f22` | byte | `struct+1` |
+| `0x9fc15f26` | u16 | `struct+0x5C` |
+| `0x9fc15f24` | u16 | `struct+0x5E` |
+
+`0x9fc15f22..0x9fc15f38` is therefore the engine's "current file" state block.
+
+### What this gives the M3U feature
+
+A **reusable, verified interface**: `get_location(struct, byte)` returns 1 and
+fills the struct's location fields on success. That is exactly the operation the
+`m3udb` adapter needs — it already produces a record, and this is the step from
+record to a filesystem-resolvable file.
+
+`UNVERIFIED`, and the reason no adapter is written yet:
+- the **filesystem call's argument order** — in particular which of
+  `*[0x9fc15f34]`, `struct+0x10` and `struct+8` is the input record and which is
+  the output buffer;
+- what function `3` of module `0x11` does;
+- whether the struct `get_location` fills is the same one the caller passes, so
+  the ownership of the buffer;
+- whether entries 1, 2 and 4 of the table are the playback entry points.
