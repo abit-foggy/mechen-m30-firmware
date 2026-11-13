@@ -909,3 +909,63 @@ The `8` is the most useful single fact: it is a byte count, and eight bytes is
 exactly the size of the two u16s plus a word — or of a packed extension plus
 fields — so the call is probably reading an eight-byte group out of the record
 into `0x9FC15F38`.
+
+## VERIFIED: the engine's driver-name table
+
+Immediately after the record preparer's pool, in bank `0x7a012d00` at guest
+`0x7A013084`, is a table of **driver names** at 12-byte stride:
+
+| guest | string |
+|---|---|
+| `0x7A013084` | `nand.drv` |
+| `0x7A013090` | `card.drv` |
+| `0x7A01309B` | `cards.drv` |
+| `0x7A0130A8` | `uhost.drv` |
+| `0x7A0130B4` | *(empty — the slot after the last)* |
+
+`VERIFIED` by decoding the bytes in place; these are real NUL-terminated names,
+not fragments of a longer blob.
+
+The record preparer's pool names two of these slots directly:
+`0x7A012EE8 = 0x7A013084` (the first, `nand.drv`) and
+`0x7A012EE4 = 0x7A0130B4` (one past the last). That pairing — a first element and
+one-past-the-last — is the shape of a **search loop**, so the preparer almost
+certainly walks this table to decide which driver a record belongs to.
+
+The four names match the firmware's storage backends exactly: `nand.drv` (NAND
+flash), `card.drv` (SD), `cards.drv`, `uhost.drv` (USB host). The engine chooses
+among them by driver name, so **the engine addresses a file as driver + path, not
+as a bare pathname**.
+
+### Why this matters for the M3U adapter
+
+The adapter's job is not "open a path" but "open a path *on a given driver*".
+That changes the interface: the engine needs both a driver identifier and the
+file's path. It also explains `0x9FC15F24`/`0x9FC15F26` — two u16s is exactly the
+shape of a *cluster and offset* pair, which is how a location is expressed once
+the driver is chosen.
+
+`UNVERIFIED`: which field of a record names the driver (a byte index into this
+table, or a string?), and whether `0x7A0130B4` being empty means the table is
+four long or that a fifth slot is reserved.
+
+### Combined with the earlier findings, the resolver is now mostly shaped
+
+Putting the session's results together, the operation the adapter needs is:
+
+```text
+record (with a driver name index and a location)
+  → mengine.ap:0x7A012D00   validate the record's bytes 1 and 3
+                            clear *[0x9FC15F21], invalidate *[0x9FC15F34]
+                            call fs module 0x11 stub 0xbfc11cc0
+                              with (0x9FC15F38, record, 8, 0)
+  → mengine.ap:0x7b06856c   get_location(descriptor, byte)
+                            fs module 0x11 stub 0xbfc11ccc, function 3
+                            fills descriptor +0, +1, +4, +0x5C, +0x5E
+  → playback
+```
+
+Both fs calls are present, both stubs verified, the descriptor layout is
+cross-validated, and the driver table is decoded. What is *still* missing is the
+ordering of `get_location`'s three pointer arguments, which comes from the caller
+of `0x7A052E64`.
