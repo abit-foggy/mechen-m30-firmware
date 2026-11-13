@@ -90,6 +90,18 @@ not need a userspace loader, and a bank with no static references is perfectly
 normal. See [reverse-engineering.md](reverse-engineering.md) for the verified
 chain from here.
 
+Every `.ap` module declares its own bank at `0x40014c00` and **all nine differ**
+(md5-distinct: browser, config, mainmenu, music, playlist, setting, udisk,
+upgrade, usound). `VERIFIED`.
+
+A near-miss worth recording: browser.ap and music.ap share the same entry
+address `0x40014C30` and their first eight bytes are identical
+(`d6 64 04 01 88 d9 a9 d9` — the common `save 0x30; addiu $s1,$sp,0x10;
+sw $a0; sw $a1` prologue). That looks like a shared trampoline. It is not: the
+full banks md5 differently, so matching entry prologues are convention, not
+sharing. **Never conclude two banks are the same from matching prefixes** —
+compare the whole bank.
+
 ## Subsystems
 
 - **Music library**: `MUSIC.LIB` (songs) and `M3U.LIB` (playlists), selected by

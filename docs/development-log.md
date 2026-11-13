@@ -165,3 +165,24 @@ playlist.ap, browser.ap or mainmenu.ap — and it sits just past the declared da
 segment (`0x9fc15400..0x9fc15414`), so it is undeclared app scratch. `0x400552A0`
 writes its argument there, which makes it the state the menu selection feeds.
 Tracing its readers is one address, not a bank.
+
+## Session 9 — the eight-readers lead was an artefact; entry banks are per-module
+
+Validating the previous handoff's recommendation destroyed it. The write at
+`0x400552A0` decodes as `lw $v1,[0x400552F0]` then `sb $v0,0($v1)`, so
+`0x9FC15436` is a **byte** state slot (and could not be a 32-bit pointer — it is
+only halfword-aligned, `0x436 mod 4 == 2`). And all eight "references" to it are
+pool words holding the address *literal*, not instructions: `0x40055288` decodes
+as `slti $a0,0x36` precisely because the bytes there are `36 54`. A byte search
+for an address finds the constant, never its uses — the same method error as the
+genre-table false positive, now written down as a rule (`a80cf9d`).
+
+Redirected to browser.ap. Its header `+0x40` also gives `0x40014C30`, and its
+first eight bytes match music.ap's — which looks like a shared entry trampoline.
+Full-bank md5s say otherwise: all nine `.ap` modules hold **different** banks at
+`0x40014c00`, so matching prologues are convention, not sharing. Recorded as a
+near-miss with the rule it teaches.
+
+Net for the session: the `0x9FC15436`/`0x40614FC0` path is closed as
+status-dispatch with no established reader, and neither recovered function gives
+an interface the M3U code can call. No firmware integration, no `.HEX`.
