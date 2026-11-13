@@ -333,3 +333,48 @@ dependency. Two callers agreeing on the shape narrows it to one question — whi
 of `*[0x9FC15F34]`, `descriptor+0x10` and `descriptor+8` is the input record —
 and that is answerable from a caller that pre-fills a descriptor with a known
 record.
+
+## Session 14 — the deadlock is broken
+
+**The stock filesystem's open operation takes a plain pathname.** That came from
+decoding `playlist.ap:0x40194c78`, the library-file creator
+`docs/library-builder.md` documents and the expanded-library build exercises --
+so it is known-working by construction rather than by inference. The sequence is:
+fill a per-type struct via module `0x10`, `cd` to the root drive with fs op `8`
+and the `':'` argument, build a filename from a 12-byte-stride table at
+`0x40195244` (`MUSIC.LIB`, `M3U.LIB`, ...) into the buffer at `0x9FC15538`, then
+`fs_open(ctx, name, 0, 0, 5)` storing the handle at `0x9FC1540C`, then
+`fs_size(ctx, &size, handle, 0, 9)`.
+
+**The decisive fact is that `fs_open`'s second argument is a NUL-terminated
+filename.** The stock code passes a name from its own table, but nothing in the
+call ties it to that table, so supplying `Playlists/foo.m3u` opens that file. The
+opaque `get_location` contract -- the thing three sessions had approached from
+different directions without crossing -- is off the critical path.
+
+That made the first firmware-side module writable against a verified interface:
+`tools/fw/m30fs.c`, 400 bytes of MIPS16e. The call goes through a five-argument
+function pointer rather than hand-written asm, so the compiler emits the o32
+sequence; verified at object level, the compiled `fscall` stores the function id
+at `16(sp)` and `jalrc`s the stub, matching the stock sequence instruction for
+instruction.
+
+The mocked host test caught two real bugs. The adapter reset its stub from a
+compile-time default on every init, so the stub could not be overridden at run
+time -- and since stub addresses are per-module (`0xBFC1640D` in playlist.ap's
+mapping, `0xBFC11CCC` in mengine.ap's) a run-time setter is the right interface
+anyway. And a mock whose size handler moved the file cursor made the first read
+silently return nothing, which would have looked like a firmware problem rather
+than a test problem.
+
+Two corrections to earlier claims. `get_location`'s "function 3" is not among the
+documented filesystem operations, and the claim that module `0x11` has two stubs
+in live use was wrong: `0xbfc11cc0` in mengine's mapping is module `0x10`
+(string/memory), not the filesystem.
+
+**Not built into a HEX yet.** The adapter is written, compiled and host-tested;
+wiring it into `build.sh` and placing it in verified-free bank space is the next
+step, along with the one remaining filesystem unknown -- whether op `0xD` is
+`(buf, n, handle)` or `(handle, buf, n)`, which the adapter mirrors from the
+stock write helper by symmetry and which one read-only hardware check would
+settle.
