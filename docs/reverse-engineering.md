@@ -844,3 +844,68 @@ The relevant discipline applies to this pool exactly as elsewhere: it was found 
 resolving pool words to *instructions that load them*, not by scanning for the mask
 value. Scanning for `0x7e190ea0` alone would have found the mask literal in many
 places (it appears in fifteen pools across the image) without revealing this writer.
+
+## VERIFIED: the record preparer `mengine.ap:0x7A012D00`
+
+Bank `0x7a012d00` (file `0x5000`, size `0x5b8`). This is the function the
+interface at `0x60050f40` calls *before* the dispatcher, so it is the stage that
+reads a record and primes the engine.
+
+```text
+0x7a012d00  save 0x30, $ra,$s0-$s1
+0x7a012d04  frame+0x20 = $a0             ; arg0 = a record pointer
+0x7a012d08  frame+0x24 = $a1             ; arg1 = a byte
+0x7a012d0c  *[0x9FC15F21] = 0            ; clear the flag
+0x7a012d12  *[0x9FC15F34] = -1           ; invalidate the fs context
+0x7a012d1c  if (arg0 == 0) → frame+8 = -1, return      ; null guard
+0x7a012d26  $a0 = 0x9FC15F38            ; a RAM address, passed BY VALUE
+0x7a012d2c  $a1 = arg0                   ; the record
+0x7a012d2e  $a2 = 8                      ; LENGTH 8
+0x7a012d32  jalrc 0xbfc11cc0             ; fs stub #2 (0x9FC15F38, arg0, 8, 0)
+0x7a012d36  ... mask byte 1 of a struct with 0xF, write it back
+0x7a012d44  $v1 = arg0[1]
+0x7a012d48  $v0 = 0xF0
+0x7a012d4a  and
+0x7a012d4e  if (arg0[1] & 0xF0)  → *[0x9FC15F23] = 1
+0x7a012d56  else                  → *[0x9FC15F23] = 0
+0x7a012d5c  $v0 = arg0[3]
+0x7a012d60  sltiu $v0, 8
+0x7a012d62  if (arg0[3] < 8) → the validation path at 0x7A012DC2
+```
+
+Its pool, at guest `0x7A012ED0`:
+
+| address | value | what |
+|---|---|---|
+| `0x7A012ED0` | `0x9FC15F21` | cleared |
+| `0x7A012ED4` | `0x9FC15F34` | set to `-1` |
+| `0x7A012ED8` | `0x9FC15F38` | passed as a pointer to the fs stub |
+| `0x7A012EDC` | `0xBFC11CC1` | **filesystem module `0x11`, a SECOND stub** |
+| `0x7A012EE0` | `0x9FC15F23` | set from `arg0[1] & 0xF0` |
+| `0x7A012EE4`/`EE8` | `0x7A0130B4`, `0x7A013084` | in-bank data |
+
+Four results, each `VERIFIED`:
+
+1. **Filesystem module `0x11` has at least two distinct stubs in live use.**
+   `0xbfc11ccc` takes function `3` (used by `get_location`); `0xbfc11cc0` is
+   called here with a **length of 8** and no function-id argument. So the two are
+   different services, and the module's functions are not interchangeable.
+2. **The engine's record preparation validates the record's own bytes** — `arg0[1]
+   & 0xF0` becomes a boolean at `0x9FC15F23`, and `arg0[3] < 8` gates a path.
+   Those are record fields, not descriptor fields.
+3. **`0x9FC15F34` is invalidated (`-1`) before every use.** It is the fs context
+   `get_location` passes as its first argument, so the context is per-operation
+   rather than a persistent handle.
+4. **This function is not the mode writer.** It touches `0x9FC15F21`,
+   `0x9FC15F34`, `0x9FC15F23` and `0x9FC15F38` but **not** `0x9FC15F20`.
+
+`UNVERIFIED`: what `0xbfc11cc0` does with `(0x9FC15F38, record, 8, 0)`; what
+record layout has bytes 1 and 3 in those roles — the `M3U.LIB` record has its
+title at `+0`, so if `arg0` points at a *library* record then byte 1 is inside
+the title, which would mean the preparer takes a different structure; who writes
+`0x9FC15F20`.
+
+The `8` is the most useful single fact: it is a byte count, and eight bytes is
+exactly the size of the two u16s plus a word — or of a packed extension plus
+fields — so the call is probably reading an eight-byte group out of the record
+into `0x9FC15F38`.
