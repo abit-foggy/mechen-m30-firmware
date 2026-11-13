@@ -29,15 +29,24 @@ missing piece would take.
 | What reads a record from a selected library? | not traced |
 | What opens the file a record's location names? | **the core blocker** |
 
-## Bank `0x7805b200` — do not call
+## Bank `0x7805b200` — a real syscall, not a trap
 
-The routines `0x7805b264`, `0x7805b2dc` and `0x7805b370` load what an earlier pass
-took for a shared kernel filesystem entry at `0xBFC16BB5`. **It is a trap-table
-address** — `0xbfc16bb5` falls inside music.ap's resident trap table, which is a
-run of `li $v1,N ; break`. Calling any of these routines would trap. `VERIFIED`
-that the address is a trap; `UNVERIFIED` whether the routines are reachable at
-all, because for a shared overlay bank absence of a static reference proves
-nothing either way.
+`VERIFIED`, and a correction to an earlier entry here that said the opposite.
+
+The routines `0x7805b264`, `0x7805b2dc` and `0x7805b370` `jalrc` through a pool
+pointer to an address that an earlier pass read as a trap. It is a **syscall
+stub**: `li $v1,MODULE ; break`, where the last argument is the function ID.
+
+**Calling convention at these sites** (`VERIFIED` as a transcription):
+
+- `$a0`–`$a3` register arguments, plus a fifth at `0x10($sp)`
+- `$a3` carries the function ID; `$v1` the module, set by the stub itself
+- result in `$v0`
+- the caller sets up a context pointer and a destination buffer from RAM
+  globals before calling
+
+`UNVERIFIED`: the semantics of the services these particular routines request,
+and whether they are on a live path.
 
 ## The enumeration filter (browser.ap's copy)
 
@@ -63,10 +72,9 @@ here is derivable from the image alone**.
 - Four register arguments `$a0`–`$a3`, plus a fifth on the stack at `0x10($sp)`.
 - Operation codes seen as immediates: `0xB` (seek), `0xD` (read `0x200` bytes).
 - Return value in `$v0`.
-- These sites' "kernel entry" is the trap `0xBFC16BB5`, so the convention
-  describes code that cannot run.
-
-**Do not build a call on this table.**
+**Do not build a call on this table without executing it** — the convention is
+transcribed, never run, and the module a stub addresses depends on which
+application's resident mapping is loaded.
 
 ## Filesystem
 

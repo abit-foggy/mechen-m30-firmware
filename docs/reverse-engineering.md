@@ -12,10 +12,14 @@ Tooling: `tools/ida/m30_ida.sh`, `tools/ida/m30_mips16e.py`.
 
 Each of these cost a full investigation. Check them before believing any address.
 
-1. **Trap tables.** Overlay regions end — and sometimes begin — with runs of
-   `li $v1,N ; break`; `05 e8` is the `break` halfword. A pointer into such a run
-   is an **error path, not a call target**. Affected: `0xbfc16a25`,
-   `0xBFC16BB5`. `VERIFIED`.
+1. **Syscall stubs are not traps — this rule replaces an earlier wrong one.**
+   Overlay regions end — and sometimes begin — with runs of
+   `li $v1,MODULE ; break`, which are **system-call stubs**: `MODULE` selects a
+   system module and the last argument carries the function ID. An earlier pass
+   in this project read them as trap/error addresses and concluded two routines
+   were dead code. **Withdrawn.** Affected: `0xbfc16a25`, `0xBFC16BB5`.
+   `VERIFIED` for the stub bytes; the *meaning* of each stub is per-module and
+   must be checked against that module's resident mapping.
 2. **Never disassemble an overlay bank linearly.** A cluster of `cmpi $rx, imm`
    immediates at `music.ap +0x1a965` looked like a numeric menu-id dispatcher; the
    immediates are ASCII from a **genre-name table** (`Blues`, `Classic`, `Rock`,
@@ -72,6 +76,20 @@ only in the last four:
 all distinct, monotonic in record order, all multiples of 32. So bytes 0–11 are
 the constant directory and bytes 12–15 the per-record value. What bytes 4–11
 mean is `UNVERIFIED`.
+
+### The syscall convention (rehabilitates the location arithmetic's context)
+
+`VERIFIED` that the routines at `0x7805b264` and `0x7805b2dc` call a **real
+syscall**, not a trap: they load a stub address from their pool and `jalrc` to
+it, after setting the function ID (`0xB`, `0xD`) as the last argument and
+placing a fifth argument at `0x10($sp)`. Under playlist.ap's resident mapping the
+stub they load is the module-`0x06` (text conversion) one, so the operation is a
+text-conversion service, not a filesystem call. Under music.ap's mapping the
+same address is module `0x11` (filesystem), which is a different service — the
+caller's module decides.
+
+What remains `UNVERIFIED` is what those two routines *do* with the result, and
+whether they are on the live M3U path.
 
 ### The withdrawn location arithmetic
 

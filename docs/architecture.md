@@ -55,13 +55,27 @@ Group 3 at table offset `0x100`, group 4 at `0xA00`, 12-byte triples
 `{file offset, load address, size}`. `VERIFIED`. Reading group 4 off by four
 bytes yields plausible but wrong banks; the true start is `0xA00`.
 
-## Trap tables
+## Syscall stub tables
 
-`VERIFIED`. Overlay regions end — and sometimes begin — with runs of MIPS16e
-`li $v1,N ; break` (`05 e8` is the `break` halfword). **Any pointer into such a
-run is an error path, never a call target.** Two addresses were mistaken for
-routines this way: `0xbfc16a25` and `0xBFC16BB5`. See
-[reverse-engineering.md](reverse-engineering.md).
+`VERIFIED`, and a correction to an earlier claim in this project.
+
+Overlay regions end — and sometimes begin — with runs of MIPS16e
+`li $v1, MODULE ; break`. **These are not trap or error addresses. They are
+system-call stubs.** The `MODULE` byte selects a system module and the *last
+argument* (`$a3`) carries the function ID; the `break` traps into the kernel
+dispatcher. Modules documented upstream: `0x0f` kernel (function `0x1c` the
+millisecond clock, `0x35` the RNG), `0x11` filesystem, `0x06` text conversion.
+
+`VERIFIED` per-module, and they differ at the same address:
+
+| module | resident range | stubs at `0xbfc16bb0` / `0xbfc16bb4` |
+|---|---|---|
+| music.ap | `0xbfc16400..0xbfc16bbc` | `0x0f` / `0x11` (filesystem) |
+| playlist.ap | `0xbfc16400..0xbfc16bbc` | `0x0f` / `0x06` (text conversion) |
+
+So a stub address is only meaningful with its module attached — the same point as
+the overlay windows above. `0xBFC16BB5` and `0xbfc16a25` were both read as error
+addresses; that reading is withdrawn.
 
 ## Subsystems
 

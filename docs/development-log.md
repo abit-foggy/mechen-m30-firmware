@@ -78,3 +78,34 @@ Host side complete and tested. Firmware side: no module patched, no `M3U.LIB`
 consumer found, no playback ABI, no `.HEX`. The blocker is that no live call
 chain has been established into any overlay bank, and without one no ABI can be
 verified. See `m3u-integration.md` for the handoff.
+
+## Session 6 — the syscall-stub correction (withdraws two earlier claims)
+
+Read the upstream research the task pointed at, and it overturns two of this
+project's conclusions.
+
+- **`li v1,MODULE ; break` is a system-call stub, not a trap or error address.**
+  The README says so outright: stubs sit at the end of resident code, the `MODULE`
+  byte selects a system module, and the *last argument* is the function ID.
+  Modules documented: `0x0f` kernel (`0x1c` millisecond clock, `0x35` RNG),
+  `0x11` filesystem, `0x06` text conversion.
+- **Overlay loading is demand-driven.** A call into an unloaded bank raises an
+  exception, the kernel loads it and retries. So "no static references" is
+  *expected* for a bank, and proves nothing about reachability — which retracts
+  the dead-code wording added in `52b658a`.
+- Verified per-module, and they differ at the same address:
+  `music.ap` has `0x0f`/`0x11` at `0xbfc16bb0`/`0xbfc16bb4`; `playlist.ap` has
+  `0x0f`/`0x06` at the same addresses. `VERIFIED` from the resident bytes.
+- Consequence: the routines at `0x7805b264` and `0x7805b2dc` **do call a real
+  service** — they set a function ID (`0xB`, `0xD`) as the last argument and
+  `jalrc` through the stub. Under playlist.ap's mapping that is module `0x06`
+  (text conversion). The "dead code / trap" reading is withdrawn.
+- Also learned from the README: the bank table has **five** groups (`0x100` to
+  `0x1000`), 12-byte entries in blocks of 64, not the two this project had been
+  scanning; the music-engine group is `0x7b` at `0x700` and the shared-library
+  group `0x71` at `0xa00`.
+
+Net: two claims withdrawn, one rehabilitated, and a bank-table scan range
+corrected. `docs/architecture.md`, `reverse-engineering.md` and `firmware-api.md`
+now carry the corrected model with the old wording marked as withdrawn rather
+than deleted.
