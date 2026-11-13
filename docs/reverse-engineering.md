@@ -452,17 +452,34 @@ table found. Every pointer below resolves to a valid bank and carries the
 MIPS16e ISA bit.
 
 ```text
-mengine.ap bank 0x7a052d00 (file 0x5600, size 0x638), table at +0x3a8
+mengine.ap bank 0x7a052d00 (file 0x5600, size 0x638, code to +0x3a8)
 
-  [0] 0x7a0530a8 = 0x7b06856d → 0x7b06856c   bank 0x7b068000  (get_location)
-  [1] 0x7a0530ac = 0x7b228119 → 0x7b228118   bank 0x7b228000
-  [2] 0x7a0530b0 = 0x7b1283ad → 0x7b1283ac   bank 0x7b128000
-  [3] 0x7a0530b4 = 0x7b0685f5 → 0x7b0685f4   bank 0x7b068000  (adjacent to [0])
-  [4] 0x7a0530b8 = 0x7b2281b9 → 0x7b2281b8   bank 0x7b228000
+  [0] +0x3a8  0x7a0530a8 = 0x7b06856d → 0x7b06856c   bank 0x7b068000  get_location
+  [1] +0x3ac  0x7a0530ac = 0x7b228119 → 0x7b228118   bank 0x7b228000  state reader
+  [2] +0x3b0  0x7a0530b0 = 0x7b1283ad → 0x7b1283ac   bank 0x7b128000
+  [3] +0x3b4  0x7a0530b4 = 0x7b0685f5 → 0x7b0685f4   bank 0x7b068000  ← driver base
+  [4] +0x3b8  0x7a0530b8 = 0x7b2281b9 → 0x7b2281b8   bank 0x7b228000
+  [5] +0x3bc  0x7a0530bc = 0x7b128245 → 0x7b128244   bank 0x7b128000
+  [6] +0x3c0  0x7a0530c0 = 0x7b0e81f9 → 0x7b0e81f8   bank 0x7b0e8000
+  [7] +0x3c4  0x7a0530c4 = 0x7b1e81e1 → 0x7b1e81e0   bank 0x7b1e8000
 ```
 
-`VERIFIED` by bank-table resolution of all five targets. Entries 0 and 3 are in
-the same bank 0x88 bytes apart; 1 and 4 share bank 0x7b228000.
+**Eight** entries, not five — the earlier count stopped where the dump stopped.
+All eight resolve to a valid bank, so the table's bounds are `0x7a0530a8` to
+`0x7a0530c8`, and the driver's base `0x7A0530B4` is **entry 3**, i.e. the driver
+uses the subset from entry 3 onward. That resolves the address discrepancy
+without either address being wrong: one is the table start, the other is where
+the driver's indexed subset begins. `VERIFIED`.
+
+`VERIFIED` by bank-table resolution of all eight targets. Entries 0 and 3 are in
+bank 0x7b068000; 1 and 4 share 0x7b228000; 2 and 5 share 0x7b128000; 6 and 7 are
+in 0x7b0e8000 and 0x7b1e8000. The pattern is three bank-pairs, which suggests the
+table is grouped by subsystem rather than being a flat list.
+
+**Effective index range:** the driver indexes from entry 3, so driver indices
+0–4 are valid (five handlers). Indices 5 and up would read past `0x7a0530c8` into
+the zero tail of the bank and call address 0 — so **the driver has exactly five
+reachable handlers**, which is worth knowing before treating any index as safe.
 
 ### `mengine.ap:0x7b06856c` — the record-to-file operation
 
@@ -631,3 +648,38 @@ pattern and the first *dynamic* dispatch established in this project.
 
 `UNVERIFIED`: which mode values select which entries — that needs the writer of
 `0x9fc15f20`, which was not traced this session.
+
+## The bank entry: a mode dispatcher, decode SUSPECT
+
+`mengine.ap:0x7A052D00` is the first function of bank `0x7a052d00`, and it reads
+the mode byte at `0x9FC15F20`:
+
+```text
+0x7a052d00  save 0x18, $ra
+0x7a052d02  lw  $v0, [0x9fc15f20]        ; the mode byte's address
+0x7a052d04  lw  $a1, [0x9fc15f21]        ; a neighbouring state byte
+0x7a052d06  lbu $a3, 0($v0)              ; mode
+0x7a052d08  lw  $v1, [0x7a0530d8]        ; claimed to be a second table base
+0x7a052d0c  sb  $a2, 0($a1)              ; *[0x9FC15F21] = 0
+0x7a052d0e  sll  $a2, $a3, 2             ; mode * 4
+0x7a052d10  addu $a1, $a2, $v1
+0x7a052d12  lw  $v0, 0($a1)
+0x7a052d14  jalrc $v0
+```
+
+**The decode is suspect and is not used.** Following it through, the word at
+`0x7A0530D8` is `0x9FC15F20` — a RAM address, not an instruction — so for mode 0
+the `jalrc` would jump into RAM. Either the operand resolution is wrong or the
+call is nonsense, and a single linear pass cannot tell which. This is the fourth
+time a decode has produced a non-instruction target, and the rule that has
+emerged each time is the same: **a decode whose terminal target is not an
+instruction is not yet a decode.**
+
+What survives is the shape — the bank entry reads the mode byte, clears the byte
+next to it, and dispatches — and the observation that `0x9FC15F20`'s address
+appears in **ten separate pools** within this one bank (`+0x24, +0x4c, +0x84,
++0xc0, +0x160, +0x19c, +0x1cc, +0x1fc, +0x22c, +0x2d8`), so roughly ten functions
+here are gated on that byte.
+
+`UNVERIFIED`: the mode values and their handlers; the writer of `0x9FC15F20`;
+the second table's real base.
