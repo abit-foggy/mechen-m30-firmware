@@ -338,6 +338,81 @@ the genre-table false positive.
 (`0x9fc15400..0x9fc15414`), so it is undeclared application scratch. It is
 written as a byte by `0x400552A0`; its readers are **not established**.
 
+## VERIFIED browser.ap call chain
+
+The first multi-bank chain in this project, and the first *reusable* firmware
+interface. Every edge below comes from an actual instruction; the disassembly is
+anchored at the header entry, never linear from a bank base.
+
+```text
+browser.ap header +0x40 = 0x40014C31
+  → browser.ap:0x40014C30                      entry bank 0x40014c00, size 0xcc
+      initialise: syscall(module 0x10, fn 0x10)      [pool 0x40014CC0]
+                  kernel (module 0x0f, fn 0x33)       [pool 0x40014CC8]
+      build struct on frame:  {fn=0x40014C00, $a0, 4($a1), lhu 2($a1)}
+      kernel(module 0x0f, fn 0x4A)  with $a0 = &struct   ← CALLBACK REGISTRATION
+      on failure: syscall(0x10, 0x11) then kernel(0x0f, 0x34)   [cleanup]
+
+  → browser.ap:0x40014C00                       the registered callback
+      $v0 = 0x40055174(arg, 0)                  [pool 0x40014C28 = 0x40055175]
+      syscall(module 0x10, fn 0x0E)  with (i8)$v0   [pool 0x40014C2C]
+
+  → browser.ap:0x40055174                       bank 0x40054c00, +0x574
+      *[0x9fc154dc] = arg                       [pool 0x40055208]  state byte
+      jal 0x40054C40 ; jal 0x40054DD0 → u16 result
+      loop while *[0x9fc154d4] != 0:            [pool 0x4005520C]  flag byte
+        flag == 1 → indirect  [0x40055210] = 0xBFC16579 → 0xBFC16578
+        flag == 2 → jal 0x4009508C               CROSS-BANK, bank 0x40094c00
+        else     → *[0x9fc154d4] = 0
+        jal 0x40055110 with $a0 = the frame      [own struct passed on]
+      exit: jal 0x40054F14(result)
+            kernel(0x0f, …) with (0x9fc15408, 0x00070000, 0xA8, 0x13)
+
+  → browser.ap:0xBFC16578                       resident, +0x178
+      state = *[0x9fc154dc]
+      state == 1        → skip to 0xBFC16622
+      state == 9 or 10  → 0xBFC165E6
+      else: flag = 1 ; jal 0xBFC164B4
+            if it returns 0 → *[frame+0x20] = 0x8D04 (a NEGATIVE error code)
+            else → [0x19]=1, [0x18]=1
+
+  → browser.ap:0xBFC164B4                       resident, +0xb4
+      0x7805b400(':')                            [pool 0xBFC16560 = 0x7805b401]
+      0x7805b400('/', *0xbfc166fc)               [pool 0xBFC16564]  resident buffer
+      fallback: 0x780db200(...)                  [pool 0xBFC16568 = 0x780db201]
+      0x780db200('/', *0xbfc1670c)               [pool 0xBFC1656C]
+```
+
+### What this establishes
+
+- **The application registers a callback with the kernel.** The entry builds a
+  four-field structure — first field a MIPS16e function pointer, then a pointer,
+  a loaded word and a loaded halfword — and passes its address to kernel function
+  `0x4A` (module `0x0f`). The kernel invokes `0x40014C00` later. This is the
+  pattern the M3U integration can reuse, and it is the first reusable interface
+  found. `VERIFIED`.
+- **The registered function is an event loop**, not a one-shot handler: it waits
+  on a flag byte at `0x9fc154d4`, dispatches on 1 and 2, and passes its own frame
+  as a struct to `0x40055110`. `VERIFIED`.
+- **`0xBFC16578` is a state dispatcher** over a state byte at `0x9fc154dc`, with
+  1, 9, 10 special-cased and everything else falling through to `0xBFC164B4`.
+  `VERIFIED`.
+- **`0xBFC164B4` is a path builder**, not a file opener: it hands the characters
+  `':'` and `'/'` to a service in bank `0x7805b200` with resident buffer pointers.
+  `VERIFIED`.
+- `0x7805b200` in browser.ap is a **path/text service** — a third distinct meaning
+  for that bank address across modules. One more confirmation that a guest address
+  means nothing without its module. `VERIFIED`.
+
+### What is still unknown
+
+- What kernel function `0x4A` does with the struct beyond invoking the callback.
+- Which of `flag == 1` vs `flag == 2` is a file selection rather than a directory
+  change — `flag == 2` calls across banks into `0x40094c00`, `flag == 1` reaches
+  the path builder.
+- Whether the path built by `0xBFC164B4` ever reaches an open, or only prepares it.
+- The playback entry point: not reached from anything established here.
+
 ### Neither recovered path leads to a stock UI or playback operation
 
 `0x400552A0` → `0x40614FC0` is a compute-a-status-then-dispatch pair, and the
