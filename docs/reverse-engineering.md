@@ -1009,12 +1009,11 @@ the same shape and are `UNVERIFIED` as call edges (they may be unused copies).
 
 So `0x55B9` is a **signature stored into and compared against a RAM global** — a
 state-validity check, in the same function that publishes the extension mask.
-That is the first *writer* of state-block content found, and it means the block
-is initialised lazily rather than being assumed valid.
 
-`UNVERIFIED`: which member of the block the magic belongs to (the pointer comes
-from `dword_60050EAC`, whose target is not yet resolved), and whether `0x55B9` is
-a record signature or a block-validity tag.
+**Correction to the first draft of this note, which implied the magic was part of
+the engine state block. It is not.** Resolving `dword_60050EAC` gives
+`0x9FC15DD4`, which is *outside* `0x9FC15F20..0x9FC15F38`. So the magic belongs
+to a **separate RAM region**, and the two should not be conflated.
 
 ### Where the descriptor comes from
 
@@ -1026,3 +1025,34 @@ this function's own caller. Chasing its origin means going one more frame up.
 `0x7a012d00` is called with `$a0 = $s1` (this function's own frame) and reads
 `frame[1]` and `frame[3]`, so the record it validates is at the *start* of the
 frame while the descriptor is further along it.
+
+## Two distinct RAM regions, not one
+
+Resolving the magic's pointer makes this worth stating separately, because
+earlier notes blurred them together.
+
+```text
+region A — library/config, ~0x9FC15C80..0x9FC15DD4
+  0x9FC15C80  a status word, written by 0x60050f60 and compared to -1
+  0x9FC15D90  the published extension mask 0x7e190ea0
+  0x9FC15DD4  the 0x55B9 magic, compared and written at 0x60050d28/0x60050d4c
+
+region B — engine current-file state, 0x9FC15F20..0x9FC15F38
+  0x9FC15F20  mode byte          0x9FC15F28  descriptor +4
+  0x9FC15F21  cleared flag       0x9FC15F34  filesystem context
+  0x9FC15F22  descriptor +1      0x9FC15F38  descriptor +0 (byte[3])
+  0x9FC15F24  descriptor +0x5E
+  0x9FC15F26  descriptor +0x5C
+```
+
+`VERIFIED` that both regions exist and are written by the same function
+(`0x60050d00`-region). `VERIFIED` that the magic is in region A and not in
+region B — which is a correction to an earlier note here.
+
+`UNVERIFIED`: everything in region A's meaning. The mask, the magic and the
+status word are all seen being *written* there, but no reader of region A has
+been traced, so an adapter must not write to either region.
+
+The distinction matters operationally: an M3U adapter that wanted to set the
+current file would target region B, whereas region A looks like configuration
+(mask, magic, status) written once by the engine's own setup path.
