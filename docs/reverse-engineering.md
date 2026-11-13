@@ -522,3 +522,71 @@ record to a filesystem-resolvable file.
 - whether the struct `get_location` fills is the same one the caller passes, so
   the ownership of the buffer;
 - whether entries 1, 2 and 4 of the table are the playback entry points.
+
+## CROSS-VALIDATED: the engine's file-descriptor struct and state block
+
+`VERIFIED`, and validated by **two independent functions in two different banks**
+that read the same globals and fill the same struct fields. This is the only
+struct layout in this project supported by more than one witness.
+
+`mengine.ap:0x7b228118` (bank `0x7b228000`, dispatch-table entry 1) is the pure
+state-reader sibling of `0x7b06856c`: same prologue shape, **no filesystem
+call**, and it fills the same fields from the same globals.
+
+The two share five globals — `0x9fc15f38`, `0x9fc15f22`, `0x9fc15f26`,
+`0x9fc15f24`, `0x9fc15f28` — and write the same four struct offsets. Because they
+agree, neither can be a mis-decode of the other.
+
+```text
+mengine engine file/record descriptor:
+
+  +0x00  byte   ←  [0x9fc15f38]+3
+  +0x01  byte   ←  *[0x9fc15f22]
+  +0x02  u16    ←  *[0x9fc15f60]     (0x7b228118 only)
+  +0x04  word   ←  *[0x9fc15f28]     (get_location only)
+  +0x5C  u16    ←  *[0x9fc15f26]
+  +0x5E  u16    ←  *[0x9fc15f24]
+  +0x60  u16    ←  *[0x9fc15f74]     (0x7b228118 only)
+  +?     u16    ←  *[0x9fc15f76]     (0x7b228118 only)
+```
+
+The globals form one contiguous **engine state block**, `0x9fc15f22..0x9fc15f78`:
+
+| global | read as | role |
+|---|---|---|
+| `0x9fc15f22` | byte | descriptor `+1` |
+| `0x9fc15f24` | u16 | descriptor `+0x5E` |
+| `0x9fc15f26` | u16 | descriptor `+0x5C` |
+| `0x9fc15f28` | word | descriptor `+4`, and an argument |
+| `0x9fc15f34` | word | argument to the filesystem call |
+| `0x9fc15f38` | byte `[3]` | descriptor `+0` |
+| `0x9fc15f60` | u16 | descriptor `+2` |
+| `0x9fc15f74` | u16 | descriptor `+0x60` |
+| `0x9fc15f76` | u16 | descriptor tail |
+
+So the pair `0x9fc15f24`/`0x9fc15f26` feeding `+0x5E`/`+0x5C` is the same
+field shape as the 16-byte location in the `M3U.LIB` records at `+0xa9` — two
+u16s, adjacent.
+
+### Why this matters for the M3U adapter
+
+The `m3udb` adapter already produces a record. The missing step was "turn this
+record into a filesystem object", and the engine has exactly that operation
+(`get_location`), plus a cached-state reader that shows the result layout. Both
+are in a **dispatch table**, so they are called through a stable indirection
+rather than a hard-coded address.
+
+### What is still unverified, and why no adapter was written
+
+- The **filesystem call's argument order** in `get_location`: which of
+  `*[0x9fc15f34]`, `struct+0x10`, `struct+8` is the input record and which is
+  the output buffer. Getting this backwards would corrupt the record in place.
+- Module `0x11` function `3`'s semantics.
+- Whether the descriptor the caller passes is the one filled (ownership).
+- Entries 2 and 4 of the table — untraced, so possibly the playback entry
+  points, but unproven.
+
+None of these can be settled from a single anchored disassembly, so writing an
+adapter now would mean guessing an ABI — which is what this project's earlier
+false positives all amounted to. The adapter is written when the argument order
+is established from a caller-side view.
