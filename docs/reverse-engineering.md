@@ -241,9 +241,56 @@ dispatches a numeric result onward.
 mechanism that raises the load exception. No pointer, no indirect table: a
 literal branch target.
 
-`UNVERIFIED`: what `0x40054D88`, `0x40054FF4`, `0x40054F80` and `0x40614FC0` do,
-and whether `arg` is a menu id. The global at `0x9FC15436` is the strongest lead
-— whatever writes it next is the state machine.
+`UNVERIFIED`: what `0x40054D88`, `0x40054FF4`, `0x40054F80` and `0x40614FC0` do.
+
+### `music.ap:0x40614FC0` — a result-code dispatcher, not a menu dispatcher
+
+`VERIFIED` by anchored disassembly from the `save 0xD0` at `0x40614fc0` (a
+4-byte EXTEND+`save`, which is why it reads as `10 f0 | da 64`):
+
+```text
+0x40614fc0  save 0xD0
+0x40614fc6  $v0 = $a0                  ; a 16-bit code in
+0x40614fc8  sh $v0, 0xC0($s1)
+0x40614fd0  sw $v0, 0xB0($s1)
+0x40614fd4  li $v0,0x8010 ; xor ; compare   → 0x40615048
+0x40614fe2  li $v0,0x8010 ; slt             → 0x4061500C
+0x40614fee  li $v0,0x8006 ; xor             → 0x40615078
+0x40614ffc  li $v0,0x800F ; xor             → 0x40615060
+0x40615026  li $v0,0x8015 ; xor             → 0x4061513A
+0x4061500c  li $v0,0x861C ; xor             → 0x406150A8
+0x4061500a  b 0x40615124                   ; default
+```
+
+The complete set of dispatch constants in the bank is
+**`0x8000, 0x8006, 0x800F, 0x8010, 0x8015, 0x861C`** — six codes, nothing else.
+
+**This disconfirms a hypothesis of mine that it was the menu dispatcher.** None
+of the menu ids appear: no `0x802D` for All Songs (id 45), no `0x8031`–`0x8035`
+for the five `m3u` slots, no `0x8030` for My Favourites. `0x8015` happens to
+equal `0x8000 + 21` and id 21 is 音乐(列表选择1), but that is arithmetic
+coincidence, not evidence — `0x8015` is one of six codes in a result dispatch.
+
+The strong reading is that these are **service result codes**, not menu ids:
+`0x861C` is `0x8600 + 0x1C`, and the upstream README documents kernel function
+`0x1C` as the millisecond clock, so `0x8600|fn` is the kernel-service family and
+`0x8000|code` another service family. `0x400552A0` returns `0x8006` on its
+failure path, and `0x8006` is one of the six, which fits: the pair is
+"compute a status, then dispatch on it".
+
+So the verified two-function chain is:
+
+```text
+music.ap 0x40014C00 ──jal──► 0x400552A0     bank 0x40054c00, +0x6a0
+                              │ u16 code (0x8006 on the failure path)
+                              ├──jal──► 0x40614FC0   bank 0x40614c00, +0x3c0
+                              │            dispatches 0x8000/0x8006/0x800F/
+                              │            0x8010/0x8015/0x861C
+                              └──jal──► 0x40054F80
+```
+
+**The All Songs handler is still not found.** This pair is status dispatch, and
+the menu path remains open.
 
 ### Entry `0x40014C30` — decoded, `VERIFIED`
 
