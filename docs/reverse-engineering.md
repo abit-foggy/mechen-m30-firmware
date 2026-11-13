@@ -683,3 +683,67 @@ here are gated on that byte.
 
 `UNVERIFIED`: the mode values and their handlers; the writer of `0x9FC15F20`;
 the second table's real base.
+
+## VERIFIED: the engine's shared current-file state block
+
+`0x9FC15F20..0x9FC15F38` is referenced by **about 22 engine banks**, all of them.
+This is not an incidental cluster — it is the engine's cross-bank shared state.
+
+| global | pool refs across mengine.ap | role |
+|---|---|---|
+| `0x9FC15F20` | 166 | the mode byte |
+| `0x9FC15F21` | 333 | a byte cleared on dispatch |
+| `0x9FC15F22` | 320 | descriptor `+1` |
+| `0x9FC15F24` | **821** | descriptor `+0x5E` — the most-referenced member |
+| `0x9FC15F26` | **876** | descriptor `+0x5C` — the most-referenced member |
+| `0x9FC15F28` | 416 | descriptor `+4`, and an fs-call argument |
+| `0x9FC15F34` | **765** | the fs-call context |
+| `0x9FC15F38` | 425 | descriptor `+0` (byte `[3]`) |
+
+Banks naming the whole block include `0x60010d00`, `0x60050d00`, `0x60090d00`,
+`0x600d0d00`, `0x60110d00`, `0x60150d00`, `0x60190d00`, `0x601d0d00`,
+`0x60210d00`, `0x7a012d00`, `0x7a052d00`, `0x7a092d00`, `0x7a0d2d00`,
+`0x7b028000`, `0x7b068000`, `0x7b0a8000`, `0x7b0e8000`, `0x7b128000`,
+`0x7b168000`, `0x7b1a8000`, `0x7b1e8000`, `0x7b228000`.
+
+The three most-referenced members are `0x9FC15F26`, `0x9FC15F24` and
+`0x9FC15F34` — and the first two are exactly the **u16 pair** that `get_location`
+and the state reader both write into a descriptor's `+0x5C`/`+0x5E`, which is the
+same shape as the 16-byte location field in the `M3U.LIB`/`MUSIC.LIB` records at
+`+0xa9`.
+
+**So the engine's notion of "the current file" is a shared RAM block, and its
+most-used component is that location pair.** That is the single most useful fact
+this project has produced for the M3U feature: a playlist adapter's job is to put
+the selected track's location into `0x9FC15F24`/`0x9FC15F26` and tell the engine
+to play, rather than to reimplement any file handling.
+
+**Caveat, stated plainly:** these are counts of *pool words naming the address*,
+not of instructions. They establish that the block is shared — which is a
+structural fact — but not what any individual instruction does with it. The
+same literal-scan discipline applies here as everywhere else.
+
+## `get_location`'s ABI — what is inferred, and from what
+
+`INFERRED`, with the evidence:
+
+- The state reader `0x7b228118` has **no filesystem call** and copies the same
+  five globals into the same descriptor offsets that `get_location` writes.
+- If the globals were outputs of `get_location`'s fs call, the state reader would
+  be reading a *result*; if they are the cached current file, both functions are
+  snapshots.
+- The far more likely reading, given the block is engine-global and
+  heavily-referenced: **the globals are the engine's current-file state**, and
+  both functions copy from it into a per-call descriptor.
+
+So `get_location($a0 = descriptor, $a1 = byte)` most likely:
+1. asks the filesystem (module `0x11`, fn `3`) to make the current context ready
+   — `*[0x9FC15F34]` is that context, `record+0x10` the input side;
+2. copies the resulting state from the globals into the descriptor.
+
+`UNVERIFIED` and the reason there is no wrapper: **which of `*[0x9FC15F34]`,
+`record+0x10` and `record+8` is input and which is output is not established**,
+and getting it backwards would write through a caller-supplied pointer. No
+caller of `get_location` was found this session — its pointer appears exactly
+once, in the table — so the caller-side view that would settle it is still
+missing.
