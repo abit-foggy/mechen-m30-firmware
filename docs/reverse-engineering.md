@@ -590,3 +590,44 @@ None of these can be settled from a single anchored disassembly, so writing an
 adapter now would mean guessing an ABI — which is what this project's earlier
 false positives all amounted to. The adapter is written when the argument order
 is established from a caller-side view.
+
+## VERIFIED: the runtime dispatch driver
+
+`mengine.ap:0x7A052E34` (bank `0x7a052d00`, `+0xe34`). This is the code that
+*uses* the dispatch table, so it settles both the table's real base and how a
+handler is chosen at runtime. `VERIFIED` by anchored disassembly.
+
+```text
+0x7a052e34  save 0x18, $ra
+0x7a052e36  $v0 = [0x9fc15f21]          ; a byte
+0x7a052e3c  *$v0 = 0                    ; clear it
+0x7a052e3e  $t8 = $a0                   ; save the argument
+0x7a052e40  beqz $a0 → return            ; nothing to do
+0x7a052e42  $a2 = [0x9fc15f20]          ; AN INDEX, read from RAM
+0x7a052e44  $v1 = [0x7a0530b4]          ; the table base
+0x7a052e46  $v0 = lbu 0($a2)
+0x7a052e48  sll $a3, $v0, 2             ; index * 4
+0x7a052e4a  addu $a2, $a3, $v1          ; &table[index]
+0x7a052e4c  lw  $v0, 0($a2)             ; the handler pointer
+0x7a052e4e  jalrc $v0                   ; call it, with ($a0, zeb($a1))
+0x7a052e50  $t8 = $v0
+0x7a052e52  return $t8
+```
+
+Two consequences that correct the table note above:
+
+- **The table's real base is `0x7A0530B4`, not `0x7a0530a8`.** The driver reads
+  that address as its base, so the pointer at `0x7a0530a8` (`0x7b06856d`,
+  `get_location`) is the entry *before* the driver's base and belongs to a
+  preceding group.
+- **Handlers are selected by a RAM byte at `0x9FC15F20`**, not by a compile-time
+  index. `0x7a052e36`–`0x7a052e3c` also clears a byte at `0x9FC15F21` on every
+  call, so the engine keeps a small state block and a mode byte side by side.
+
+So the engine's handler indirection is: a mode byte in RAM selects which
+function in a bank-resident table runs, and the selected function is called with
+the caller's own arguments passed straight through. That is a genuinely reusable
+pattern and the first *dynamic* dispatch established in this project.
+
+`UNVERIFIED`: which mode values select which entries — that needs the writer of
+`0x9fc15f20`, which was not traced this session.
