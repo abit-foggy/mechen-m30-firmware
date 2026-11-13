@@ -157,9 +157,63 @@ pointer), `0x9fc1a1c8`, `0x9fc15588` (active filter).
 `UNVERIFIED`: whether this walker is the folder-browser's enumeration filter, and
 what builds the node array.
 
-## Call graphs
+## Verified call chain — music.ap entry
 
-**None established.** No verified edge exists yet from the Music application
+`VERIFIED` end to end: header pointer, bank-table entry, prologue bytes and pool
+targets all agree.
+
+### The ISA-bit convention
+
+Function pointers in overlay banks carry the **MIPS16e ISA bit in bit 0**; the
+routine starts at `pointer & ~1`. This resolves the off-by-one that made the
+syscall stubs look like mid-instruction addresses:
+
+| pool pointer | routine | identity |
+|---|---|---|
+| `0xBFC16BB1` | `0xBFC16BB0` | `li $v1,0x0f ; break` — **kernel** syscall stub |
+| `0xBFC16401` | `0xBFC16400` | `li $v1,0x10 ; break` — module `0x10` stub |
+| `0x400552A1` | `0x400552A0` | a routine in bank `0x40054c00` |
+| `0x40014C31` | `0x40014C30` | **music.ap's entry point** |
+
+It also matches the upstream-documented addresses exactly: `0xBFC16BB1` is the
+module `0x0f` stub and `0xBFC1640D` the module `0x11` filesystem stub, both in
+playlist.ap's resident mapping.
+
+### The edges
+
+```
+music.ap header +0x40 = 0x40014C31
+   → 0x40014C30              entry. save 0x30, $ra,$s0-$s1; $a0 → 0x20($s1);
+                             $a1 → 0x24($s1). Takes two arguments.
+   → [pool 0x40014CC0 = 0xBFC16401]  syscall, module 0x10, function 0x10
+   → [pool 0x40014CC8 = 0xBFC16BB1]  syscall, module 0x0f kernel, function 0x33
+   → [pool 0x40014CC4 = 0x40014C01]  the sibling at 0x40014C00
+
+0x40014C00                  sibling. save 0x20; $a0 saved; then
+   → [pool 0x40014C28 = 0x400552A1]  0x400552A0, bank 0x40054c00,
+                                      file 0x1400..0x1c00, size 0x800
+   → [pool 0x40014C2C = 0xBFC16401]  syscall, module 0x10, function 0x0e
+```
+
+**Bank `0x40054c00` is the same one the library builder documents the mask table
+in** (`0x40055220`, the 14-bit `MUSIC.LIB` mask and the 2-bit `M3U.LIB` mask).
+So the entry path reaches the library-selection code. Whether it reaches the
+mask table by a direct pointer is not shown — no pointer to `0x40055220` exists
+inside the bank, so it is reached by PC-relative or computed addressing.
+
+`UNVERIFIED` and the next edges to establish: what `0x400552A0` does, and how a
+selection event reaches a list-population routine.
+
+### The bank table has five groups
+
+`VERIFIED`. Groups at `0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800,
+0x900, 0xA00, 0xB00, 0xC00, 0xD00, 0xE00, 0xF00, 0x1000` — the README says
+blocks of 64 entries per group, with the length word at `0x2c` understating it.
+Earlier scans in this project covered only `0x100` and `0xA00`, which missed
+`music.ap`'s entry bank at table offset `0x100` region and the mask bank at
+`0x10c`.
+
+## Call graphs (older section) No verified edge exists yet from the Music application
 entry through All Songs to playback. This is the open task; see
 [m3u-integration.md](m3u-integration.md#handoff).
 
