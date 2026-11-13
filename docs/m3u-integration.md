@@ -114,98 +114,57 @@ The user's **ten existing M3U playlists** browseable and playable through the
 stock Music interface, in the custom `MECHEN_M30.HEX`. No new playlists, no
 reorganisation, no replacement of the stock base.
 
-## Latest verified call graph
+## Latest verified findings
 
-Two chains, both anchored at module headers, neither linear from a bank base.
-
-```text
-browser.ap header +0x40 = 0x40014C31
-  → browser.ap:0x40014C30                      entry, bank 0x40014c00, size 0xcc
-      syscall(module 0x10, fn 0x10)  [0x40014CC0]
-      kernel (module 0x0f, fn 0x33)  [0x40014CC8]
-      struct {fn=0x40014C00, $a0, 4($a1), lhu 2($a1)}
-      kernel(module 0x0f, fn 0x4A) with $a0 = &struct   ← CALLBACK REGISTRATION
-      cleanup: syscall(0x10, 0x11), kernel(0x0f, 0x34)
-  → browser.ap:0x40014C00                       the registered callback
-      → browser.ap:0x40055174                   bank 0x40054c00, +0x574 EVENT LOOP
-          *[0x9fc154dc] = arg   [state byte]
-          jal 0x40054C40 ; jal 0x40054DD0 → u16
-          loop on *[0x9fc154d4]                 [flag byte]
-            flag 1 → 0xBFC16578                 resident, +0x178
-                       state = *[0x9fc154dc]; 1/9/10 special, else →
-                       0xBFC164B4               resident, +0xb4  PATH BUILDER
-                         0x7805b400(':') ; 0x7805b400('/', *0xbfc166fc)
-                         0x780db200(...) ; 0x780db200('/', *0xbfc1670c)
-            flag 2 → browser.ap:0x4009508C      bank 0x40094c00, +0x48c
-                       descriptor {1,3,0,0,0}, code 0x6002
-                       → browser.ap:0x40C14C00  bank 0x40c14c00, +0x0
-                         ✦ body NOT TRUSTWORTHY — an indirect call resolves to
-                           the ASCII at +0x280 ("AHEH"), so one linear pass
-                           cannot distinguish a mis-resolved operand from a
-                           bogus call. Bounded here deliberately.
-
-mengine.ap bank 0x7a052d00, dispatch table at +0x3a8
-  [0] 0x7b06856c   bank 0x7b068000   get_location   ← record→file
-  [1] 0x7b228118   bank 0x7b228000   state reader   ← layout cross-check
-  [2] 0x7b1283ac   bank 0x7b128000
-  [3] 0x7b0685f4   bank 0x7b068000
-  [4] 0x7b2281b8   bank 0x7b228000
-
-  → mengine.ap:0x7b06856c   get_location($a0 = record, $a1 = byte)
-      record->4 = *[0x9fc15f28]
-      fs(module 0x11, fn 3)(*[0x9fc15f34], record+0x10, record+8, 0, 3)
-        stub 0xbfc11ccc = 'li $v1,0x11 ; break' — VERIFIED in the resident
-      on success fills record+0, +1, +0x5C, +0x5E from the state block
-      returns 1; 0 otherwise
-
-  → mengine.ap:0x7A052E34   the driver that USES the table
-      *[0x9fc15f21] = 0
-      index = *[0x9fc15f20]          ← a RAM byte selects the handler
-      call table_base 0x7A0530B4 [index], passing the caller's own arguments
-```
-
-Full detail, including every pool offset and the corrections, in
-[reverse-engineering.md](reverse-engineering.md).
+1. `M3U.LIB` already indexes all ten playlists. The database is not the problem.
+2. A library is chosen by **index** into a 12-byte table at `0x7805b498`.
+3. **The engine's shared state block is `0x9FC15F20..0x9FC15F38`**, named by about
+   22 mengine banks. Its most-referenced members are the u16 pair
+   `0x9FC15F24`/`0x9FC15F26` — the same field shape as the 16-byte location in
+   the `M3U.LIB` records at `+0xa9`. This reframes the adapter: put the selected
+   track's location there and tell the engine to play.
+4. The **dispatch table** in bank `0x7a052d00` has **eight** entries; the driver's
+   base `0x7A0530B4` is entry 3, so the driver reaches five handlers.
+5. `get_location` (`0x7b06856c`) calls filesystem module `0x11` function `3` and
+   fills a descriptor; a second witness (`0x7b228118`) fills the same fields from
+   the same globals with no filesystem call.
+6. `li v1,MODULE ; break` are **syscall stubs**; pool pointers carry the MIPS16e
+   ISA bit in bit 0. Overlay loading is **demand-driven**.
 
 ## Completed implementations
 
 - **Host chain, complete and tested**: `M3U.LIB` → 10 records → 10 playlists →
   **615 ordered tracks**, order and duplicates preserved, deterministic.
-  `tools/m3u/m3u.c` (reader, 576 B MIPS16e), `m3udb.c` (adapter, 496 B),
-  `m3uw.c` (writer, 808 B — kept, not needed for this feature).
-- **Firmware findings pinned by a regression test**: `tools/fw/test_m3uengine.py`
-  re-derives the dispatch table, the cross-validated descriptor layout and the
-  filesystem stub from the unpacked component.
+- `tools/fw/test_m3uengine.py` pins the dispatch table, the descriptor layout and
+  the filesystem stub, re-derived from the unpacked component.
 
 ## Known false leads — do not resume
 
-- `0x9FC15436` byte scans: the eight "readers" were pool words holding the
-  address literal, not instructions.
-- The genre-name table at `music.ap +0x1a965` misread as a menu dispatcher.
-- `0xBFC16BB5` / `0xbfc16a25` read as traps: they are **syscall stubs**.
-- The playlist.ap mask table transferred to music.ap: absent there.
-- The 16-byte location field's meaning as an exFAT directory entry.
-- `0x40C14C00`'s body, which a single linear pass cannot decode.
+- `0x9FC15436` byte scans (pool words, not instructions).
+- The genre table at `music.ap +0x1a965` read as a menu dispatcher.
+- `0xBFC16BB5`/`0xbfc16a25` read as traps — they are syscall stubs.
+- The playlist.ap mask table transferred to music.ap.
+- `0x40C14C00`'s body, and `0x7A052D00`'s bank-entry decode: both terminate in a
+  non-instruction target, so both need a second anchor. Do not cite either.
 
 ## Exact remaining blockers
 
-1. **`get_location`'s filesystem argument order.** Which of `*[0x9fc15f34]`,
-   `record+0x10` and `record+8` is the input record and which is the output
-   buffer. Getting it backwards would corrupt the record in place, so the
-   adapter is deliberately unwritten.
-2. **Module 0x11 function 3's semantics**, and buffer ownership.
-3. **The playback entry point.** Entries 2 and 4 of the table are untraced.
-4. **Which mode byte at `0x9FC15F20` selects which handler** — needs its writer.
+1. **The resolver ABI**: which of `*[0x9FC15F34]`, `record+0x10` and `record+8`
+   is the input record and which is the output buffer. This is the only thing
+   between the host chain and a firmware adapter.
+2. **A writer of the state block** — no writer traced, so an adapter must not
+   poke `0x9FC15F24`/`0x9FC15F26` directly.
+3. The playback entry point; entries 2 and 4 of the table untraced.
+4. Display: no list widget traced.
 
 ## Next actionable steps
 
-1. **Settle the argument order from a caller's view.** Find who calls
-   `0x7b06856c` through the driver, i.e. who sets `*[0x9fc15f20]` to select it
-   and what it puts in `record+0x10` and `record+8`. That is one RAM address to
-   trace, not a bank to search — the same discipline that produced every
-   verified edge above.
-2. **Entries 2 and 4** (`0x7b1283ac`, `0x7b2281b8`) for the playback path.
-3. Then the adapter: `m3udb` record → `get_location` → `m3u` reader → list.
+1. **Find a caller of `get_location`.** Its pointer appears exactly once, in the
+   table at `0x7a0530a8` — and that entry is *before* the driver's base, so the
+   driver does not use it. Something else indexes from `0x7a0530a8`; finding that
+   consumer gives the caller-side view that settles argument roles.
+2. **Entries 2 and 4** (`0x7b1283ac`, `0x7b2281b8`) for playback.
+3. Then the adapter.
 
 ## Tests
 
@@ -216,6 +175,7 @@ is unmounted.
 
 ## Latest commits
 
+`eb6cb25` shared state block · `5a3da6c` dispatch-table bounds ·
 `fc401e6` engine regression test · `062408b` runtime dispatch driver ·
 `5ed836d` cross-validated descriptor layout · `d87876c` engine dispatch table +
 `get_location` · `a19bddc` browser chain bounded · `4f4a3b9` browser chain.
@@ -223,18 +183,3 @@ is unmounted.
 Working tree clean apart from the user's pre-existing theme work (`README.md`,
 `build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
 pushed. No `MECHEN_M30.HEX` built.
-
-## Tests
-
-`test_m3u` 18, `test_m3uw` 26, `exttest` 52, `test_m3fs`, `test_m3udb`,
-`fw007test` — all pass. `test_m3udb`'s card path-resolution check reports an
-explicit **NOTE/SKIPPED** (not a pass) because the SD card is unmounted.
-
-## Latest commits
-
-`73d6c37` decode entry + `0x400552A0` + withdraw the mask over-claim ·
-`5e624e0` verified chain + ISA-bit · `ff20624` API reference ·
-`0c0c1ec` syscall-stub correction · `f49a234` dev log.
-
-Working tree clean apart from the user's pre-existing theme work (`README.md`,
-`build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing pushed.

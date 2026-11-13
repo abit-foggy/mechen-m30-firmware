@@ -137,3 +137,76 @@ same address is module `0x11` in music.ap's.
   Getting this wrong silently corrupts every immediate-based scan.
 - `save`/`restore` are `0x64xx`-style extended pairs; `jr $ra` is `0xE820`;
   `break` is `05 e8` and is the second halfword of a syscall stub, not an error.
+
+## Engine current-file state block — `0x9FC15F20..0x9FC15F38`
+
+The engine's cross-bank shared state, named by approximately 22 mengine.ap banks.
+This is the interface an M3U adapter targets.
+
+```c
+/* Verified layout from two independent readers; see reverse-engineering.md.
+ * Addresses are guest RAM in the engine's data window. */
+#define M30_MODE_BYTE      0x9FC15F20   /* selects the dispatch handler */
+#define M30_MODE_FLAG      0x9FC15F21   /* cleared on every dispatch */
+#define M30_STATE_B        0x9FC15F22   /* descriptor +1 */
+#define M30_LOC_LO         0x9FC15F24   /* descriptor +0x5E — most referenced */
+#define M30_LOC_HI         0x9FC15F26   /* descriptor +0x5C — most referenced */
+#define M30_DESC4          0x9FC15F28   /* descriptor +4 */
+#define M30_FS_CTX         0x9FC15F34   /* the filesystem context */
+#define M30_DESC0          0x9FC15F38   /* descriptor +0, read as byte[3] */
+```
+
+`VERIFIED`: the eight addresses, their data types (from the `lbu`/`lhu`/`lw`
+widths used), and which descriptor field each one fills — established by
+`0x7b06856c` and `0x7b228118` independently.
+
+`VERIFIED`: the block is shared — roughly 22 banks name it, and the pair
+`0x9FC15F24`/`0x9FC15F26` is the engine's most-referenced state.
+
+`UNVERIFIED`: what a *write* to any of these does — no writer was traced. So
+this document does **not** authorise an adapter to poke the block; doing so
+without knowing the writer's side would race the engine.
+
+### The shape a safe adapter takes
+
+Given what is verified, the adapter's structure is determined even though its
+engine call is not:
+
+1. `m3udb_read` a record → the playlist's location and title.
+2. Open the `.m3u` file — **not yet possible**, because the resolver ABI
+   (`get_location`'s fs argument order) is unestablished.
+3. `m3u_next` its entries in order.
+4. Present the selection.
+
+Step 2 is the whole gap, and it is one question, not a project: which of
+`*[0x9FC15F34]`, `record+0x10` and `record+8` is the input record and which is
+the output buffer.
+
+### `get_location` — the intended call, with the unknown marked
+
+```c
+/* INFERRED, NOT VERIFIED. Do not call this. */
+int m30_get_location(void *descriptor, unsigned char b);
+/*   0x7b06856c. Fills descriptor +0, +1, +4, +0x5C, +0x5E on success,
+ *   returns 1; 0 on failure. Internally calls filesystem module 0x11
+ *   function 3 as:
+ *     fs11_3(*[0x9FC15F34], descriptor + 0x10, descriptor + 8, 0, 3)
+ *   and the input/output roles of those three pointers are UNKNOWN. */
+```
+
+`VERIFIED` about it: the module-`0x11` stub at `0xbfc11ccc`; function id `3`; the
+five descriptor fields filled; the globals read. `UNVERIFIED`: argument roles,
+buffer ownership, whether the descriptor is modified in place, and what function
+`3` does.
+
+### Module `0x11` (filesystem) — what is established
+
+| function id | seen at | note |
+|---|---|---|
+| `0x0E` | browser.ap `0x40014C00` | called with a byte from `0x40055174` |
+| `0x10` | browser.ap entry, music.ap entry | acquire-a-resource pattern |
+| `0x11` | browser.ap entry cleanup | release |
+| `0x33`, `0x34`, `0x4A` | module `0x0F` (kernel) | registration and lifecycle |
+
+`VERIFIED` as call sites and function ids. `UNVERIFIED`: the semantics — no
+module-`0x11` function's meaning is known, so no adapter may rely on one.
