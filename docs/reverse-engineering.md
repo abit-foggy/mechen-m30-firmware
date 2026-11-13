@@ -403,6 +403,32 @@ browser.ap header +0x40 = 0x40014C31
 - `0x7805b200` in browser.ap is a **path/text service** — a third distinct meaning
   for that bank address across modules. One more confirmation that a guest address
   means nothing without its module. `VERIFIED`.
+- **Shared status codes.** `0x8014` (expected success) and `0x8D04` (a negative
+  error, `-0x72FC` as i16) appear in *two* separate functions — `0xBFC16578`'s
+  failure path and `0x4009508C`'s — and `0x8014` is one of the same `0x80xx`
+  family the music.ap dispatcher compares. This is the firmware's status-code
+  range. `VERIFIED`.
+- **`0x40C14C00` is a shared service reached from the browser.** It takes a
+  16-bit code and a five-byte descriptor `{1, 3, 0, 0, 0}`, and it is the entry
+  point of its own bank — so several modules can call it. `VERIFIED` for the call
+  edge and the argument shape.
+
+### The limit of this chain, demonstrated not assumed
+
+The chain is verified down to the call `0x400950b0`, and **no further**. `0x40C14C00`
+is one function spanning `0x40c14c00..0x40c14e7c` (the bank's only `jrc $ra`, at
+`+0x27c`; everything after `0x40c14e80` is data, including the string `AHEH` at
+`+0x280`). Inside it, the instruction IDA decodes as
+`lw $v0, dword_40C14E80 ; jalrc $v0` would call `0x48454841` — the ASCII at
+`+0x280`.
+
+So either IDA is mis-resolving that operand, or the call is genuinely bogus, and
+**a single linear disassembly of the body cannot tell the two apart.** That is the
+same failure mode as the genre table, caught here before it produced a false edge.
+The body needs re-derivation from a second anchor before any of it is cited.
+
+`UNVERIFIED`: everything below `0x400950b0`, including the meaning of code
+`0x6002`, descriptor `{1,3,0,0,0}`, and the two status codes.
 
 ### What is still unknown
 
