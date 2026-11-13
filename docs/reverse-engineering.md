@@ -1056,3 +1056,51 @@ been traced, so an adapter must not write to either region.
 The distinction matters operationally: an M3U adapter that wanted to set the
 current file would target region B, whereas region A looks like configuration
 (mask, magic, status) written once by the engine's own setup path.
+
+## VERIFIED: a second caller of `0x7A052E64`, and the argument comparison
+
+`mengine.ap:0x600d1162` (bank `0x600d0d00`, `+0x462`):
+
+```text
+0x600d1148  lw  $v0, [0x600D11A4] = 0x9fc15c80   ; region A status
+0x600d114a  lw  $v1, 0($v0)
+0x600d1154  btnez → skip                          ; if status == -1, do nothing
+0x600d1156  lw  $v1, [0x600D119C] = 0x9fc15ce0
+0x600d1158  lw  $v0, [0x600D1180] = 0x9fc15c88
+0x600d115a  lbu $v0, 0x31($v0)                    ; a byte at struct+0x31
+0x600d115e  move $a0, $v1                         ; arg0 = 0x9FC15CE0
+0x600d1160  move $a1, $v0                         ; arg1 = that byte
+0x600d1162  lw  $v0, [0x600D11A8] = 0x7a052e65
+0x600d1164  jalrc $v0                             ; 0x7A052E64(0x9FC15CE0, byte)
+```
+
+### The comparison
+
+| caller | arg0 | arg1 | gate |
+|---|---|---|---|
+| `0x60050fee` | `frame+0x10` — the caller's own descriptor | `frame+0x14` | region-A status `!= -1` |
+| `0x600d1162` | **`0x9FC15CE0` — a fixed RAM pointer** | byte at `0x9FC15C88+0x31` | the same gate |
+
+Both agree on the **shape**: a descriptor pointer plus a byte. They differ in
+which buffer: the first passes its own, the second passes what looks like the
+engine's **persistent descriptor at `0x9FC15CE0`**.
+
+That is the strongest evidence yet for `get_location`'s signature:
+
+```c
+/* shape verified from two callers; roles still INFERRED */
+int m30_dispatch(void *descriptor, unsigned char mode_or_field);
+```
+
+and it also gives the adapter a concrete answer to "which buffer": there is a
+**fixed engine descriptor at `0x9FC15CE0`**, in region A's neighbourhood, that
+one caller uses directly. If the second fs argument's role can be confirmed, an
+adapter could reuse that buffer rather than allocating its own.
+
+`VERIFIED`: both call edges, the argument shapes, and the shared gate.
+`UNVERIFIED`: whether `0x9FC15CE0` is the engine's own descriptor or a shared
+scratch; what the byte at `0x9FC15C88+0x31` selects; and the fs argument roles.
+
+Notable in the same pool: `0x600d118c = 0xbfc11cc1` (the second fs stub again)
+and `0x600d1184 = 0x601910b0` (a function in the *third* bank that also names
+this dispatcher), so the three banks form a connected group.
