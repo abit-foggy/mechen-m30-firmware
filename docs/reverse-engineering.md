@@ -747,3 +747,42 @@ and getting it backwards would write through a caller-supplied pointer. No
 caller of `get_location` was found this session — its pointer appears exactly
 once, in the table — so the caller-side view that would settle it is still
 missing.
+
+## VERIFIED: the get_location caller and the mode-0 mapping
+
+`mengine.ap:0x7A052E64` (bank `0x7a052d00`, `+0x164`) is the caller that reaches
+`get_location`, and it settles two things at once.
+
+```text
+0x7a052e64  save 0x18, $ra
+0x7a052e66  lw  $v1, [0x9fc15f24]        ; the location global's ADDRESS
+0x7a052e68  lw  $a2, [0x9fc15f21]         ; the flag byte's ADDRESS
+0x7a052e6a  lhu $v0, 0($v1)              ; $v0 = the u16 AT 0x9FC15F24
+0x7a052e6e  zeb $a1                       ; $a1 = arg1, zero-extended
+0x7a052e70  sb  $a3(0), 0($a2)           ; *[0x9FC15F21] = 0
+0x7a052e72  beqz $v0  → return 0          ; no location → nothing to do
+0x7a052e74  beqz $a0  → return 0          ; no argument  → nothing to do
+0x7a052e76  lw  $a2, [0x9fc15f20]        ; the MODE byte's ADDRESS
+0x7a052e78  lw  $v1, [0x7a0530a8]        ; THE TABLE START
+0x7a052e7a  lbu $v0, 0($a2)              ; mode
+0x7a052e7c  sll $a3, $v0, 2              ; mode * 4
+0x7a052e7e  addu $a2, $a3, $v1           ; &table[mode]
+0x7a052e80  lw  $v0, 0($a2)              ; table[mode]
+0x7a052e82  jalrc $v0                    ; call it with ($a0, zeb($a1))
+0x7a052e84  restore; jrc $ra
+```
+
+Two results:
+
+- **Mode 0 selects `get_location`.** This function indexes the table from its
+  start `0x7A0530A8`, so `mode == 0` picks `table[0]` = `0x7b06856c`. `VERIFIED`.
+- **`*[0x9FC15F24]` is the guard.** If that u16 is zero the handler never runs, so
+  a nonzero value at `0x9FC15F24` is what means "a file is current". That is the
+  same field `get_location` writes into descriptor `+0x5E`. `VERIFIED`.
+
+It also explains the two dispatchers: `0x7A052E64` uses the table **start**
+(`0x7A0530A8`, modes 0–7) while `0x7A052E34` uses the **subset** from entry 3
+(`0x7A0530B4`). They are two different views of one table, not a discrepancy.
+
+`UNVERIFIED`: which mode values callers actually set, and therefore which of
+`table[1]`–`table[7]` a given caller reaches. Only mode 0's target is established.
