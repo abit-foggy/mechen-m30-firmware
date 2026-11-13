@@ -184,21 +184,47 @@ mengine.ap bank 0x7a052d00 — dispatch table at 0x7A0530A8, EIGHT entries
 
 ## Exact remaining blockers
 
-1. **`get_location`'s filesystem argument order.** `0x7A052E64` calls
-   `table[mode]` with `($a0, zeb($a1))`, so `get_location`'s `$a0`/`$a1` come
-   from **its** caller — the caller of `0x7A052E64` — which was not traced. One
-   more link settles it, and it is one pool search.
-2. **A writer of the state block**: none traced, so an adapter must not poke
-   `0x9FC15F24`/`0x9FC15F26` directly.
-3. The playback entry point: table entries 2 and 4 untraced.
+1. **`get_location`'s filesystem argument order.** Now substantially narrowed by
+   this session's results, but still not established.
+2. **A writer of the mode byte `0x9FC15F20`**: not found. The record preparer
+   touches `0x9FC15F21`, `0x9FC15F34`, `0x9FC15F23`, `0x9FC15F38` — but *not*
+   the mode byte, so an adapter still must not set it.
+3. The playback entry point: table entries 2, 4, 5, 6 and 7 untraced.
 4. Display: no list widget traced.
+
+## What this session added, and why the resolver is now mostly shaped
+
+- **The extension mask `0x7e190ea0` is live.** `mengine.ap:0x60050f40` publishes
+  it into the RAM global `0x9FC15D90` and then drives dispatcher A. That closes a
+  long-standing question: the masks are not dead data.
+- **Filesystem module `0x11` has two stubs in live use.** `0xbfc11ccc` takes
+  function `3` (`get_location`); `0xbfc11cc0` is called by the record preparer
+  with `(0x9FC15F38, record, 8, 0)` — **a length of 8**. Different services.
+- **`0x9FC15F34` is invalidated (`-1`) before every use**, so it is a
+  per-operation context, not a persistent handle.
+- **The engine has a driver-name table** at `0x7A013084`: `nand.drv`,
+  `card.drv`, `cards.drv`, `uhost.drv` — the four storage backends. The record
+  preparer's pool names the first and one-past-the-last, which is the shape of a
+  search loop. **The engine addresses a file as driver + path**, not a bare
+  pathname — and two u16s is exactly a cluster-and-offset pair once the driver is
+  chosen, which explains `0x9FC15F24`/`0x9FC15F26`.
+
+## Exact remaining blockers (unchanged at the top)
+
+1. `get_location`'s filesystem argument order — narrowed, not settled.
+2. The mode-byte writer.
 
 ## Next actionable steps
 
-1. **Find the caller of `0x7A052E64`** — one pool search for its pointer gives
-   `get_location`'s real argument source and settles the fs argument roles.
-2. **Entries 2 and 4** (`0x7b1283ac`, `0x7b2281b8`) for playback.
-3. Then the adapter: `m3udb` record → resolver → `m3u` reader → list.
+1. **Find the caller of `0x7A052E64`.** Its pointer appears three times in
+   mengine.ap — `+0x1330`, `+0x24a8`, `+0x3e60` — each in a bank that also names
+   the driver's base. Resolving the function that owns `+0x1330` gives
+   `get_location`'s real argument source.
+2. **Determine which record field names the driver.** The preparer reads
+   `arg0[1]` and `arg0[3]`; if `arg0` points at a library record's location
+   field, those are inside the 16-byte location, which would tie the driver
+   choice to the record directly.
+3. Then the adapter.
 
 ## Tests
 
@@ -209,10 +235,9 @@ is unmounted.
 
 ## Latest commits
 
-`eb6cb25` shared state block · `5a3da6c` dispatch-table bounds ·
-`fc401e6` engine regression test · `062408b` runtime dispatch driver ·
-`5ed836d` cross-validated descriptor layout · `d87876c` engine dispatch table +
-`get_location` · `a19bddc` browser chain bounded · `4f4a3b9` browser chain.
+`72e1e59` record preparer + second fs stub · `387f129` driver-name table ·
+`b1e8bd2` get_location caller + mode 0 · `eb6cb25` shared state block ·
+`5a3da6c` dispatch-table bounds · `86ec8c5` published extension mask.
 
 Working tree clean apart from the user's pre-existing theme work (`README.md`,
 `build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
