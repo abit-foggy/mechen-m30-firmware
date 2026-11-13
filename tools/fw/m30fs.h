@@ -64,9 +64,19 @@ struct m30fs_file {
     u32 pos;
 };
 
-/* Initialise from the resident filesystem context. `ctx` is the word the stock
- * creator reads from RAM (0x9FC15410 in playlist.ap's mapping); callers pass
- * whatever their module's own context global holds. Returns M30FS_OK. */
+/* Point the adapter at a module's filesystem stub and context.
+ *
+ * The stub address is per-module -- 0xBFC1640D in playlist.ap's resident
+ * mapping, 0xBFC11CCC in mengine.ap's -- while the function ids are the
+ * kernel's, so this has to be set at run time rather than baked in. Call it
+ * once before the first m30fs_init; m30fs_init no longer resets it, which is
+ * what let a test mock be clobbered.
+ *
+ * `stub` is the address of the `li v1,0x11; break` pair, and `ctx` the word the
+ * stock creator reads from RAM (0x9FC15410 in playlist.ap's mapping). */
+void m30fs_set_stub(u32 stub, u32 ctx);
+
+/* Initialise from the resident filesystem context. Returns M30FS_OK. */
 int m30fs_init(struct m30fs_file *f, u32 ctx, const char *path);
 
 /* Read up to `n` bytes at the current cursor into `buf`. Returns the byte

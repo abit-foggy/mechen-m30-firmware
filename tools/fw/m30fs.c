@@ -28,6 +28,12 @@ typedef long (*fs_fn)(u32 a0, u32 a1, u32 a2, u32 a3, u32 op);
 static fs_fn fs;          /* the module-0x11 stub */
 static u32   fs_ctx;      /* the filesystem context */
 
+void m30fs_set_stub(u32 stub, u32 ctx)
+{
+    fs = (fs_fn)stub;
+    fs_ctx = ctx;
+}
+
 static long fscall(u32 a0, u32 a1, u32 a2, u32 a3, u32 op)
 {
     return fs(a0, a1, a2, a3, op);
@@ -44,9 +50,6 @@ int m30fs_init(struct m30fs_file *f, u32 ctx, const char *path)
     f->handle = 0;
     f->size = 0;
     f->pos = 0;
-
-    fs = (fs_fn)M30FS_STUB;
-    fs_ctx = ctx;
 
     /* copy the caller's path into our own bounded buffer so a too-long name is
      * refused here rather than handed to the kernel */
