@@ -44,6 +44,10 @@ int m30fs_init(struct m30fs_file *f, u32 ctx, const char *path)
     u32 i;
     char name[M30FS_PATH_MAX];
 
+    /* `ctx` is accepted for symmetry with m30fs_set_stub but the context was
+     * already installed there; the adapter never changes it mid-flight. */
+    (void)ctx;
+
     if (!f || !path) {
         return M30FS_ERR;
     }
