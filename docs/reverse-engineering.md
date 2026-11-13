@@ -969,3 +969,60 @@ Both fs calls are present, both stubs verified, the descriptor layout is
 cross-validated, and the driver table is decoded. What is *still* missing is the
 ordering of `get_location`'s three pointer arguments, which comes from the caller
 of `0x7A052E64`.
+
+## VERIFIED: the call edge into `0x7A052E64`, and a state-block magic
+
+**Stage A's acceptance criterion.** All three candidate sites are pool words in
+three different banks, and the one in bank `0x60050d00` is *used*:
+
+```text
+0x60050fee  lw  $v0, [0x60051030]        ; = 0x7A052E65 → 0x7A052E64
+0x60050ff0  jalrc $v0
+```
+
+with, immediately before:
+
+```text
+0x60050fe6  lw  $v0, 0x10($s1)
+0x60050fe8  lbu $v1, 0x14($s1)
+0x60050fea  move $a0, $v0
+0x60050fec  move $a1, $v1
+```
+
+So the caller is `mengine.ap:0x60050fee` and it passes **frame+0x10 as arg0 (a
+descriptor pointer) and frame+0x14 as arg1 (a byte)**. `VERIFIED` by instruction
+evidence, not by address literal.
+
+The other two sites — bank `0x600d0d00` and bank `0x60190d00` — are pool words in
+the same shape and are `UNVERIFIED` as call edges (they may be unused copies).
+
+### The same bank also initialises the state block with a magic
+
+```text
+0x60050d24  lw  $v0, [dword_60050EAC]     ; a RAM pointer
+0x60050d26  lhu $v0, 0($v0)
+0x60050d28  cmpi $v0, 0x55B9             ← the magic
+...
+0x60050d4c  li  $v0, 0x55B9
+0x60050d4c  sh  $v0, 0($v1)              ← it is WRITTEN on the miss path
+```
+
+So `0x55B9` is a **signature stored into and compared against a RAM global** — a
+state-validity check, in the same function that publishes the extension mask.
+That is the first *writer* of state-block content found, and it means the block
+is initialised lazily rather than being assumed valid.
+
+`UNVERIFIED`: which member of the block the magic belongs to (the pointer comes
+from `dword_60050EAC`, whose target is not yet resolved), and whether `0x55B9` is
+a record signature or a block-validity tag.
+
+### Where the descriptor comes from
+
+`frame+0x10` is **never written** anywhere in bank `0x60050d00`'s code, so it is
+an *input* to this function, not something it builds. That matters: the
+descriptor passed to `0x7A052E64` — and hence to `get_location` — is supplied by
+this function's own caller. Chasing its origin means going one more frame up.
+
+`0x7a012d00` is called with `$a0 = $s1` (this function's own frame) and reads
+`frame[1]` and `frame[3]`, so the record it validates is at the *start* of the
+frame while the descriptor is further along it.
