@@ -106,69 +106,123 @@ byte before believing it.
 
 # Handoff (current state)
 
+# Handoff (current state)
+
 ## Objective
 
 The user's **ten existing M3U playlists** browseable and playable through the
 stock Music interface, in the custom `MECHEN_M30.HEX`. No new playlists, no
 reorganisation, no replacement of the stock base.
 
-## Completed and verified
+## Latest verified call graph
 
-**Host side, complete.** `tools/m3u/m3ulib.py` decodes `M3U.LIB` (10 records,
-one per playlist, UTF-16LE titles, extension `M3U\0`);
-`tools/m3u/m3udb.c` turns a record index into ordered tracks — verified against
-read-only copies of the real card: **10 records → 615 tracks**, order and
-duplicates preserved, deterministic. `tools/m3u/m3u.c` is the reader; 18 tests.
-All cross-compile to MIPS16e warning-free.
+Two chains, both anchored at module headers, neither linear from a bank base.
 
-**Firmware side, first real chain.** `music.ap`'s declared entry point is
-`0x40014C30` (header `+0x40` = `0x40014C31`; the `+1` is the MIPS16e ISA bit).
-It is initialisation: acquire with a module-`0x10` service, abort on failure,
-register a structure with the kernel (module `0x0f`, function `0x33`). One call
-path from it reaches `0x400552A0` → `0x40614FC0`, both decoded — see
+```text
+browser.ap header +0x40 = 0x40014C31
+  → browser.ap:0x40014C30                      entry, bank 0x40014c00, size 0xcc
+      syscall(module 0x10, fn 0x10)  [0x40014CC0]
+      kernel (module 0x0f, fn 0x33)  [0x40014CC8]
+      struct {fn=0x40014C00, $a0, 4($a1), lhu 2($a1)}
+      kernel(module 0x0f, fn 0x4A) with $a0 = &struct   ← CALLBACK REGISTRATION
+      cleanup: syscall(0x10, 0x11), kernel(0x0f, 0x34)
+  → browser.ap:0x40014C00                       the registered callback
+      → browser.ap:0x40055174                   bank 0x40054c00, +0x574 EVENT LOOP
+          *[0x9fc154dc] = arg   [state byte]
+          jal 0x40054C40 ; jal 0x40054DD0 → u16
+          loop on *[0x9fc154d4]                 [flag byte]
+            flag 1 → 0xBFC16578                 resident, +0x178
+                       state = *[0x9fc154dc]; 1/9/10 special, else →
+                       0xBFC164B4               resident, +0xb4  PATH BUILDER
+                         0x7805b400(':') ; 0x7805b400('/', *0xbfc166fc)
+                         0x780db200(...) ; 0x780db200('/', *0xbfc1670c)
+            flag 2 → browser.ap:0x4009508C      bank 0x40094c00, +0x48c
+                       descriptor {1,3,0,0,0}, code 0x6002
+                       → browser.ap:0x40C14C00  bank 0x40c14c00, +0x0
+                         ✦ body NOT TRUSTWORTHY — an indirect call resolves to
+                           the ASCII at +0x280 ("AHEH"), so one linear pass
+                           cannot distinguish a mis-resolved operand from a
+                           bogus call. Bounded here deliberately.
+
+mengine.ap bank 0x7a052d00, dispatch table at +0x3a8
+  [0] 0x7b06856c   bank 0x7b068000   get_location   ← record→file
+  [1] 0x7b228118   bank 0x7b228000   state reader   ← layout cross-check
+  [2] 0x7b1283ac   bank 0x7b128000
+  [3] 0x7b0685f4   bank 0x7b068000
+  [4] 0x7b2281b8   bank 0x7b228000
+
+  → mengine.ap:0x7b06856c   get_location($a0 = record, $a1 = byte)
+      record->4 = *[0x9fc15f28]
+      fs(module 0x11, fn 3)(*[0x9fc15f34], record+0x10, record+8, 0, 3)
+        stub 0xbfc11ccc = 'li $v1,0x11 ; break' — VERIFIED in the resident
+      on success fills record+0, +1, +0x5C, +0x5E from the state block
+      returns 1; 0 otherwise
+
+  → mengine.ap:0x7A052E34   the driver that USES the table
+      *[0x9fc15f21] = 0
+      index = *[0x9fc15f20]          ← a RAM byte selects the handler
+      call table_base 0x7A0530B4 [index], passing the caller's own arguments
+```
+
+Full detail, including every pool offset and the corrections, in
 [reverse-engineering.md](reverse-engineering.md).
 
-## Latest verified findings
+## Completed implementations
 
-1. `M3U.LIB` already indexes all ten playlists. The database is not the problem.
-2. A library is chosen by **index** into a 12-byte table at `0x7805b498`
-   (`MUSIC.LIB` slot 0, `M3U.LIB` slot 1); `0x7805b370` computes
-   `base + index*12`.
-3. The location field's *layout* is known from the card — twelve constant bytes
-   then a per-record u32 — its *meaning* is not.
-4. `li v1,MODULE ; break` are **syscall stubs**; pool pointers carry the MIPS16e
-   ISA bit in bit 0, so `0xBFC16BB1` is the kernel stub at `0xBFC16BB0`.
-5. Overlay loading is **demand-driven** — a call into an unloaded bank raises an
-   exception and the kernel loads and retries — so "no static references" is
-   expected and proves nothing about reachability.
-6. `0x40614FC0` dispatches **six service result codes**, not menu ids. No
-   `0x802D` for All Songs, none of `0x8031`–`0x8035` for the `m3u` slots.
-7. Bank contents differ per module at the same guest address; the documented
-   mask table is playlist.ap-only and absent from music.ap's copy.
+- **Host chain, complete and tested**: `M3U.LIB` → 10 records → 10 playlists →
+  **615 ordered tracks**, order and duplicates preserved, deterministic.
+  `tools/m3u/m3u.c` (reader, 576 B MIPS16e), `m3udb.c` (adapter, 496 B),
+  `m3uw.c` (writer, 808 B — kept, not needed for this feature).
+- **Firmware findings pinned by a regression test**: `tools/fw/test_m3uengine.py`
+  re-derives the dispatch table, the cross-validated descriptor layout and the
+  filesystem stub from the unpacked component.
 
-## Exact blockers
+## Known false leads — do not resume
 
-1. **The All Songs handler is not found.** The one chain recovered so far is
-   status dispatch, not menu dispatch.
-2. Consequently no record → file resolution, no playback entry point, no display
-   surface.
+- `0x9FC15436` byte scans: the eight "readers" were pool words holding the
+  address literal, not instructions.
+- The genre-name table at `music.ap +0x1a965` misread as a menu dispatcher.
+- `0xBFC16BB5` / `0xbfc16a25` read as traps: they are **syscall stubs**.
+- The playlist.ap mask table transferred to music.ap: absent there.
+- The 16-byte location field's meaning as an exFAT directory entry.
+- `0x40C14C00`'s body, which a single linear pass cannot decode.
 
-## Next recommended step
+## Exact remaining blockers
 
-**Stop following the `0x9FC15436` / `0x400552A0` / `0x40614FC0` path** — it is
-compute-a-status-then-dispatch, its status slot has no established reader, and
-the "eight references" that motivated it were a search artefact (a byte scan for
-the address literal finds the literal in pools, not its uses).
+1. **`get_location`'s filesystem argument order.** Which of `*[0x9fc15f34]`,
+   `record+0x10` and `record+8` is the input record and which is the output
+   buffer. Getting it backwards would corrupt the record in place, so the
+   adapter is deliberately unwritten.
+2. **Module 0x11 function 3's semantics**, and buffer ownership.
+3. **The playback entry point.** Entries 2 and 4 of the table are untraced.
+4. **Which mode byte at `0x9FC15F20` selects which handler** — needs its writer.
 
-Go to the folder browser instead, as the task brief allows. `browser.ap` is where
-a user actually picks a file, so the selection callback there is the real
-selection path, and it is reached from `browser.ap`'s own entry point (header
-`+0x40`, same convention as music.ap's `0x40014C31` → `0x40014C30`). One command
-gives it: parse `browser.ap`'s header `+0x40`, clear the ISA bit, disassemble
-from that prologue, and follow.
+## Next actionable steps
 
-Whatever that reaches, verify each edge by resolving instructions, not by
-searching for address literals — the two errors above both came from the latter.
+1. **Settle the argument order from a caller's view.** Find who calls
+   `0x7b06856c` through the driver, i.e. who sets `*[0x9fc15f20]` to select it
+   and what it puts in `record+0x10` and `record+8`. That is one RAM address to
+   trace, not a bank to search — the same discipline that produced every
+   verified edge above.
+2. **Entries 2 and 4** (`0x7b1283ac`, `0x7b2281b8`) for the playback path.
+3. Then the adapter: `m3udb` record → `get_location` → `m3u` reader → list.
+
+## Tests
+
+`test_m3u` 18, `test_m3uw` 26, `exttest` 52, `test_m3fs`, `test_m3udb`,
+`test_m3uengine`, `fw007test` — **all pass**. `test_m3udb`'s card
+path-resolution check reports **NOTE/SKIPPED**, not a pass, because the SD card
+is unmounted.
+
+## Latest commits
+
+`fc401e6` engine regression test · `062408b` runtime dispatch driver ·
+`5ed836d` cross-validated descriptor layout · `d87876c` engine dispatch table +
+`get_location` · `a19bddc` browser chain bounded · `4f4a3b9` browser chain.
+
+Working tree clean apart from the user's pre-existing theme work (`README.md`,
+`build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
+pushed. No `MECHEN_M30.HEX` built.
 
 ## Tests
 
