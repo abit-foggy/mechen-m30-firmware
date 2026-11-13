@@ -138,6 +138,52 @@ same address is module `0x11` in music.ap's.
 - `save`/`restore` are `0x64xx`-style extended pairs; `jr $ra` is `0xE820`;
   `break` is `05 e8` and is the second halfword of a syscall stub, not an error.
 
+## Filesystem adapter — `tools/fw/m30fs.c` — the first callable interface
+
+`VERIFIED` ABI, host-tested logic, **not yet executed on the target**.
+
+```c
+/* tools/fw/m30fs.h — opens a file BY PATH through the stock kernel. */
+void m30fs_set_stub(u32 stub, u32 ctx);   /* per-module: see below */
+int  m30fs_init(struct m30fs_file *f, u32 ctx, const char *path);
+long m30fs_read(struct m30fs_file *f, void *buf, u32 n);
+u32  m30fs_tell(const struct m30fs_file *f);
+void m30fs_close(struct m30fs_file *f);
+```
+
+Derived from `playlist.ap:0x40194c78`, the stock library-file creator
+`docs/library-builder.md` documents and the expanded-library build exercises, so
+the ABI is known-working by construction:
+
+| op | meaning | call shape |
+|---|---|---|
+| `8` | chdir | `(ctx, ':', 0, 0, 8)` — to the root drive |
+| `5` | **open** | `(ctx, name, 0, 0, 5)` — `name` is NUL-terminated; handle in `$v0`, `0` = failure |
+| `9` | size | `(ctx, &size, handle, 0, 9)` |
+| `0xD` | read | `(ctx, buf, n, handle, 0xD)` |
+| `7` | close | `(ctx, handle, 0, 0, 7)` |
+
+The function id is the **last** argument, a fifth word at `0x10($sp)` — which the
+adapter gets from a five-argument function pointer rather than hand-written asm,
+so the compiler emits the o32 sequence. Verified at object level: the compiled
+`fscall` stores the id at `16(sp)` and `jalrc`s the stub, matching the stock
+sequence instruction for instruction.
+
+**`name` is a plain pathname.** The stock code passes a name from its own table,
+but nothing in the call ties it to that table, so `"Playlists\foo.m3u"` opens
+that file. That is why the unresolved `get_location` contract is no longer on the
+critical path.
+
+Stub addresses are **per-module** — `0xBFC1640D` in playlist.ap's resident
+mapping, `0xBFC11CCC` in mengine.ap's — while the function ids are the kernel's.
+Hence `m30fs_set_stub`, and hence the note in `m30fs.h` that the context is read
+from RAM rather than hard-coded.
+
+`UNVERIFIED`: whether op `0xD`'s argument order is exactly `(buf, n)` — the
+adapter mirrors the stock append-write helper's `(buf, len)` for op `0xE`, which
+is an inference from symmetry, not from a decoded read site. If reads come back
+wrong on hardware, that is the first thing to check.
+
 ## Engine current-file state block — `0x9FC15F20..0x9FC15F38`
 
 The engine's cross-bank shared state, named by approximately 22 mengine.ap banks.
