@@ -786,3 +786,61 @@ It also explains the two dispatchers: `0x7A052E64` uses the table **start**
 
 `UNVERIFIED`: which mode values callers actually set, and therefore which of
 `table[1]`–`table[7]` a given caller reaches. Only mode 0's target is established.
+
+## VERIFIED: the mask writer, and the engine's interface pool
+
+`mengine.ap:0x60050F40`-region, in bank `0x60050d00` (file `0x1000..0x1800`). This
+is the function that finally settles whether the extension masks are used, and
+they are.
+
+Its pool, at guest `0x60051010`:
+
+```text
+0x60051010  0x7e190ea0   the documented MUSIC.LIB extension mask
+0x60051014  0x9fc15d90   RAM
+0x60051018  0x7a012d01 → 0x7a012d00   an engine bank entry
+0x6005101C  0x9fc15c80   RAM
+0x60051020  0x7a052e35 → 0x7a052e34   dispatcher A
+0x60051024  0xbfc11ccd → 0xbfc11ccc   filesystem module 0x11 stub
+0x60051028  0xbfc11cc1 → 0xbfc11cc0   a second module 0x11 stub
+```
+
+The data flow:
+
+```text
+0x60050f4a  $v0 = 0x7e190ea0
+0x60050f4c  frame+4 = $v0
+0x60050f52  *[0x9FC15D90] = $v0        ← THE MASK IS PUBLISHED TO RAM
+
+0x60050f58  jalrc 0x7a012d00           ; (frame, 0)
+0x60050f60  *[0x9FC15C80] = result     ; a status is published too
+
+0x60050f78  jalrc 0x7a052e34           ; dispatcher A (frame+0x10, frame+0x14)
+0x60050f7c  frame+0x15 = result
+0x60050f7e  if (frame+0x15 == 1):
+0x60050f9a    jalrc 0xbfc11ccc         ; fs(module 0x11, FUNCTION 2)
+                                            (*[0x9FC15C80], frame+8, 0, 0, 2)
+0x60050fae    jalrc 0xbfc11cc0         ; (frame+8, frame+0x14, 3, 5)
+```
+
+Three results, each `VERIFIED`:
+
+1. **The extension mask `0x7e190ea0` is live.** It is written into the RAM global
+   `0x9FC15D90` by a function that then drives the dispatcher. The mask is not
+   dead data, which completes the picture begun in `docs/library-builder.md`.
+2. **Filesystem module `0x11` has at least two functions in use here** — `2` via
+   the `0xbfc11ccc` stub and an unnumbered call via `0xbfc11cc0` with
+   `(frame+8, frame+0x14, 3, 5)`. Note this is **function 2, not 3**; `get_location`
+   uses function 3, so the module's functions are distinct operations.
+3. **A second engine bank entry** (`0x7a012d00`) is called before the dispatcher,
+   so bank `0x7a012d00` is on the live path too — it was already known to name the
+   state block.
+
+`UNVERIFIED`: what `0x7a012d00` does; what the mask does once published to
+`0x9FC15D90`; who reads `0x9FC15C80`; the roles of the `(frame+8, frame+0x14, 3, 5)`
+arguments.
+
+The relevant discipline applies to this pool exactly as elsewhere: it was found by
+resolving pool words to *instructions that load them*, not by scanning for the mask
+value. Scanning for `0x7e190ea0` alone would have found the mask literal in many
+places (it appears in fifteen pools across the image) without revealing this writer.
