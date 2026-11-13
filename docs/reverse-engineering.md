@@ -195,14 +195,76 @@ music.ap header +0x40 = 0x40014C31
    → [pool 0x40014C2C = 0xBFC16401]  syscall, module 0x10, function 0x0e
 ```
 
-**Bank `0x40054c00` is the same one the library builder documents the mask table
-in** (`0x40055220`, the 14-bit `MUSIC.LIB` mask and the 2-bit `M3U.LIB` mask).
-So the entry path reaches the library-selection code. Whether it reaches the
-mask table by a direct pointer is not shown — no pointer to `0x40055220` exists
-inside the bank, so it is reached by PC-relative or computed addressing.
+**Correction to an earlier version of this section, which over-claimed here.**
+Bank `0x40054c00` is *a* bank both modules declare, but the contents differ and
+the documented mask table does not transfer:
 
-`UNVERIFIED` and the next edges to establish: what `0x400552A0` does, and how a
-selection event reaches a list-population routine.
+| module | bank file range | `0x400552A0` | mask `0x7e190ea0` |
+|---|---|---|---|
+| music.ap | `0x1400..0x1c00` | real code (`save 0x20` prologue) | **ABSENT** |
+| playlist.ap | `0x2400..0x2c00` | **all zeros** | at bank `+0x620` |
+
+So the mask table is a **playlist.ap** structure and music.ap's copy of the same
+guest address carries no masks at all. The entry path does *not* reach it, and
+the earlier sentence saying it did is withdrawn. `VERIFIED` by scanning both
+banks for the mask literals.
+
+### `music.ap:0x400552A0` — decoded, `VERIFIED`
+
+Signature `u16 f(u8 arg)`; `$a1` is saved to the frame and unused in the body
+shown. Anchored disassembly from the `save 0x20` prologue at bank `+0x6a0`:
+
+```text
+0x400552a0  save 0x20, $ra,$s1            ; frame
+0x400552a4  sw  $a0, 0x10($s1)            ; arg
+0x400552a8  lw  $v1, [0x9FC15436]         ; RAM global -> pointer
+0x400552ac  sb  $a0, 0($v1)               ; *global = arg
+0x400552ae  jal 0x40054D88                ; A
+0x400552b4  cmpi $v0, 1 / bteqz           ; if (A() == 1) ...
+0x400552bc  ...zeb(arg)
+0x400552c2  jal 0x40054FF4                ; B(arg)  -> u16 result
+0x400552cc  li $v0,0x7FFA ; neg           ; else result = 0x8006
+0x400552d4  move $a0, result
+0x400552d8  jal 0x40614FC0                ; C(result) -- CROSS-BANK, bank 0x40614c00
+0x400552de  jal 0x40054F80                ; D
+0x400552e4  return result                 ; u16
+```
+
+So it *stores its argument into the RAM global at `0x9FC15436`*, then gates on
+an in-bank call, computes a 16-bit code (`0x8006` on the failure path), hands it
+to a routine in a **different bank** (`0x40614c00`), calls one more in-bank
+routine, and returns the code. The shape is an event or command handler that
+dispatches a numeric result onward.
+
+**`0x400552d8` is the first cross-bank `jal` verified on a live path** — a direct
+`jal` into bank `0x40614c00`, which under demand-driven loading is exactly the
+mechanism that raises the load exception. No pointer, no indirect table: a
+literal branch target.
+
+`UNVERIFIED`: what `0x40054D88`, `0x40054FF4`, `0x40054F80` and `0x40614FC0` do,
+and whether `arg` is a menu id. The global at `0x9FC15436` is the strongest lead
+— whatever writes it next is the state machine.
+
+### Entry `0x40014C30` — decoded, `VERIFIED`
+
+Initialisation, not an event loop:
+
+```text
+0x40014c34  sw $a0, 0x20($s1)             ; two arguments saved
+0x40014c36  sw $a1, 0x24($s1)
+0x40014c38  li $a3,0x10 ; jalrc [0xBFC16401]   ; syscall module 0x10, fn 0x10
+0x40014c44  sb $v0, 0x10($s1)
+0x40014c46  ...compare with -1
+0x40014c52  return -1 if it failed        ; init aborts
+0x40014c5a  [0($s1)] = [pool 0x40014CC4]  ; the sibling 0x40014C00
+0x40014c5e  [4($s1)] = $a0                ; build a struct from the arguments
+0x40014c64  [8($s1)] = 4($a1) (lw)
+0x40014c6c  sh [0xC($s1)], 2($a1) (lhu)
+0x40014c6e  li $a3,0x33 ; jalrc [0xBFC16BB1]   ; kernel syscall module 0x0f, fn 0x33
+```
+
+So: acquire a resource with a module-`0x10` service, abort on failure, then
+register a structure with the kernel (module `0x0f`, function `0x33`).
 
 ### The bank table has five groups
 
