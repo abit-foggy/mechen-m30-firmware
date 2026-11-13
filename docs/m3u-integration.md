@@ -106,7 +106,6 @@ byte before believing it.
 
 # Handoff (current state)
 
-# Handoff (current state)
 
 ## Objective
 
@@ -114,7 +113,43 @@ The user's **ten existing M3U playlists** browseable and playable through the
 stock Music interface, in the custom `MECHEN_M30.HEX`. No new playlists, no
 reorganisation, no replacement of the stock base.
 
-## Latest verified findings
+## Latest verified call graph
+
+```text
+mengine.ap bank 0x7a052d00 — dispatch table at 0x7A0530A8, EIGHT entries
+
+  [0] 0x7b06856c   bank 0x7b068000   get_location   ← mode 0
+  [1] 0x7b228118   bank 0x7b228000   state reader
+  [2] 0x7b1283ac   bank 0x7b128000
+  [3] 0x7b0685f4   bank 0x7b068000   ← driver 0x7A052E34's base = entry 3
+  [4] 0x7b2281b8   bank 0x7b228000
+  [5] 0x7b128244   bank 0x7b128000
+  [6] 0x7b0e81f8   bank 0x7b0e8000
+  [7] 0x7b1e81e0   bank 0x7b1e8000
+
+  → mengine.ap:0x7A052E64                the caller that reaches get_location
+      guard: the u16 at 0x9FC15F24 zero → return 0 immediately, so
+             *[0x9FC15F24] is what means "a file is current"
+      index the table from its START 0x7A0530A8 by *[0x9FC15F20]
+      → table[mode] with ($a0, zeb($a1))
+      → mode 0 selects get_location                       ← VERIFIED
+
+  → mengine.ap:0x7A052E34                the second view of the same table
+      *[0x9FC15F21] = 0; index from 0x7A0530B4 (entry 3) by *[0x9FC15F20]
+      five reachable handlers; indices past 4 read the bank's zero tail
+
+  → mengine.ap:0x7b06856c   get_location($a0 = descriptor, $a1 = byte)
+      descriptor->4 = *[0x9FC15F28]
+      fs(module 0x11, fn 3)(*[0x9FC15F34], descriptor+0x10, descriptor+8, 0, 3)
+        stub 0xbfc11ccc = 'li $v1,0x11 ; break' — VERIFIED in the resident
+      on success fills descriptor +0, +1, +0x5C, +0x5E; returns 1, else 0
+```
+
+**The engine's shared state block** is `0x9FC15F20..0x9FC15F38`, named by about
+22 mengine banks. Its most-referenced members are the u16 pair
+`0x9FC15F24`/`0x9FC15F26` — the same field shape as the 16-byte location in the
+`M3U.LIB` records at `+0xa9`.
+
 
 1. `M3U.LIB` already indexes all ten playlists. The database is not the problem.
 2. A library is chosen by **index** into a 12-byte table at `0x7805b498`.
@@ -149,22 +184,21 @@ reorganisation, no replacement of the stock base.
 
 ## Exact remaining blockers
 
-1. **The resolver ABI**: which of `*[0x9FC15F34]`, `record+0x10` and `record+8`
-   is the input record and which is the output buffer. This is the only thing
-   between the host chain and a firmware adapter.
-2. **A writer of the state block** — no writer traced, so an adapter must not
-   poke `0x9FC15F24`/`0x9FC15F26` directly.
-3. The playback entry point; entries 2 and 4 of the table untraced.
+1. **`get_location`'s filesystem argument order.** `0x7A052E64` calls
+   `table[mode]` with `($a0, zeb($a1))`, so `get_location`'s `$a0`/`$a1` come
+   from **its** caller — the caller of `0x7A052E64` — which was not traced. One
+   more link settles it, and it is one pool search.
+2. **A writer of the state block**: none traced, so an adapter must not poke
+   `0x9FC15F24`/`0x9FC15F26` directly.
+3. The playback entry point: table entries 2 and 4 untraced.
 4. Display: no list widget traced.
 
 ## Next actionable steps
 
-1. **Find a caller of `get_location`.** Its pointer appears exactly once, in the
-   table at `0x7a0530a8` — and that entry is *before* the driver's base, so the
-   driver does not use it. Something else indexes from `0x7a0530a8`; finding that
-   consumer gives the caller-side view that settles argument roles.
+1. **Find the caller of `0x7A052E64`** — one pool search for its pointer gives
+   `get_location`'s real argument source and settles the fs argument roles.
 2. **Entries 2 and 4** (`0x7b1283ac`, `0x7b2281b8`) for playback.
-3. Then the adapter.
+3. Then the adapter: `m3udb` record → resolver → `m3u` reader → list.
 
 ## Tests
 
