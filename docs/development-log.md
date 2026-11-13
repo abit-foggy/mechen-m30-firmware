@@ -302,3 +302,34 @@ Combined, the resolver's shape is now: validate the record's bytes 1 and 3, call
 layout is cross-validated, and the only thing still missing is the ordering of
 `get_location`'s three pointer arguments — which comes from the caller of
 `0x7A052E64`, whose pointer appears three times in mengine.ap.
+
+## Session 13 — two verified callers, and two RAM regions separated
+
+**Stage A's acceptance criterion met.** All three candidate sites are pool words
+in different banks, and two are live call edges. `0x60050fee` passes
+`frame+0x10` (a descriptor pointer) and `frame+0x14` (a byte);
+`0x600d1162` passes a **fixed RAM pointer `0x9FC15CE0`** and a byte read from
+struct `0x9FC15C88+0x31`. Both are gated on the region-A status at `0x9FC15C80`
+being `-1` (`6a285f9`, `69dfeb4`).
+
+The comparison matters more than either edge alone: two independent callers
+agree on the shape — a descriptor pointer plus a byte — and one of them names a
+**fixed engine descriptor at `0x9FC15CE0`** that an adapter could reuse instead
+of allocating its own.
+
+**A correction.** The `0x55B9` magic I had reported as part of the engine state
+block is at `0x9FC15DD4`, which is *outside* `0x9FC15F20..0x9FC15F38`. So the
+magic belongs to a separate region and the first draft of that note was wrong
+(`4848436`).
+
+Splitting the picture into two regions was the useful part. Region A, roughly
+`0x9FC15C80..0x9FC15DD4`, holds the published extension mask, the magic and a
+status word compared to `-1`; region B is the engine's current-file state block.
+Both are written by the same function, but no reader of region A has been traced,
+so neither is safe for an adapter to write.
+
+**Still unwritten: the adapter.** The fs argument roles remain the single
+dependency. Two callers agreeing on the shape narrows it to one question — which
+of `*[0x9FC15F34]`, `descriptor+0x10` and `descriptor+8` is the input record —
+and that is answerable from a caller that pre-fills a descriptor with a known
+record.

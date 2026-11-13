@@ -184,47 +184,37 @@ mengine.ap bank 0x7a052d00 — dispatch table at 0x7A0530A8, EIGHT entries
 
 ## Exact remaining blockers
 
-1. **`get_location`'s filesystem argument order.** Now substantially narrowed by
-   this session's results, but still not established.
-2. **A writer of the mode byte `0x9FC15F20`**: not found. The record preparer
-   touches `0x9FC15F21`, `0x9FC15F34`, `0x9FC15F23`, `0x9FC15F38` — but *not*
-   the mode byte, so an adapter still must not set it.
+1. **`get_location`'s filesystem argument order.** Two verified callers now agree
+   on the *shape* — a descriptor pointer plus a byte — but the roles of the three
+   pointers inside the fs call are still unestablished.
+2. **A writer of the mode byte `0x9FC15F20`**: still not found. The record
+   preparer touches `0x9FC15F21`, `0x9FC15F34`, `0x9FC15F23`, `0x9FC15F38` but
+   not the mode byte.
 3. The playback entry point: table entries 2, 4, 5, 6 and 7 untraced.
 4. Display: no list widget traced.
 
-## What this session added, and why the resolver is now mostly shaped
+## What this session added
 
-- **The extension mask `0x7e190ea0` is live.** `mengine.ap:0x60050f40` publishes
-  it into the RAM global `0x9FC15D90` and then drives dispatcher A. That closes a
-  long-standing question: the masks are not dead data.
-- **Filesystem module `0x11` has two stubs in live use.** `0xbfc11ccc` takes
-  function `3` (`get_location`); `0xbfc11cc0` is called by the record preparer
-  with `(0x9FC15F38, record, 8, 0)` — **a length of 8**. Different services.
-- **`0x9FC15F34` is invalidated (`-1`) before every use**, so it is a
-  per-operation context, not a persistent handle.
-- **The engine has a driver-name table** at `0x7A013084`: `nand.drv`,
-  `card.drv`, `cards.drv`, `uhost.drv` — the four storage backends. The record
-  preparer's pool names the first and one-past-the-last, which is the shape of a
-  search loop. **The engine addresses a file as driver + path**, not a bare
-  pathname — and two u16s is exactly a cluster-and-offset pair once the driver is
-  chosen, which explains `0x9FC15F24`/`0x9FC15F26`.
-
-## Exact remaining blockers (unchanged at the top)
-
-1. `get_location`'s filesystem argument order — narrowed, not settled.
-2. The mode-byte writer.
+- **Two verified call edges into `0x7A052E64`**, with argument comparison:
+  `0x60050fee` passes `frame+0x10`/`frame+0x14`; `0x600d1162` passes a **fixed
+  engine descriptor at `0x9FC15CE0`** and a byte from `0x9FC15C88+0x31`. Both are
+  gated on the region-A status at `0x9FC15C80` being `-1`.
+- **A `0x55B9` magic** compared against and written into `0x9FC15DD4` — so the
+  state is lazily initialised, and region A is configuration, not file state.
+- **Two RAM regions, now separated.** Region A (`~0x9FC15C80..0x9FC15DD4`) holds
+  the mask, the magic and a status word. Region B (`0x9FC15F20..0x9FC15F38`) is
+  the engine's current-file state. An adapter that wanted to set the current file
+  would target region B; region A is written once by the engine's own setup.
 
 ## Next actionable steps
 
-1. **Find the caller of `0x7A052E64`.** Its pointer appears three times in
-   mengine.ap — `+0x1330`, `+0x24a8`, `+0x3e60` — each in a bank that also names
-   the driver's base. Resolving the function that owns `+0x1330` gives
-   `get_location`'s real argument source.
-2. **Determine which record field names the driver.** The preparer reads
-   `arg0[1]` and `arg0[3]`; if `arg0` points at a library record's location
-   field, those are inside the 16-byte location, which would tie the driver
-   choice to the record directly.
-3. Then the adapter.
+1. **Confirm `0x9FC15CE0`'s role.** If it is the engine's own descriptor, an
+   adapter can reuse it rather than allocating one — but only once the fs
+   argument roles are settled.
+2. **Settle the fs argument roles.** The three pointers are `*[0x9FC15F34]`,
+   `descriptor+0x10` and `descriptor+8`. A caller that pre-fills a descriptor
+   with a known record would show which one is input.
+3. Then the adapter, and only then the UI.
 
 ## Tests
 
