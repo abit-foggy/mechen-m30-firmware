@@ -292,58 +292,54 @@ music.ap 0x40014C00 ──jal──► 0x400552A0     bank 0x40054c00, +0x6a0
 **The All Songs handler is still not found.** This pair is status dispatch, and
 the menu path remains open.
 
-### The live lead: `0x9FC15436`
+### `0x9FC15436` — a byte state slot, and a withdrawn lead
 
-`VERIFIED`. A music.ap-**private** RAM global: referenced from eight places in
-music.ap (`+0x1754`, `+0x1a88`, `+0x1af0`, `+0x2050`, `+0x2624`, `+0x32f0`,
-`+0x3fa0`, `+0x5710`) and from **nowhere** in playlist.ap, browser.ap or
-mainmenu.ap. It sits just past music.ap's declared data segment
-(`0x9fc15400..0x9fc15414`), so it is undeclared application scratch rather than
-declared data.
+`VERIFIED` by decoding the actual instruction, and this **withdraws the lead
+recommended in an earlier handoff**, which rested on a search artefact.
 
-`0x400552A0` writes its argument there, which makes this the state a selection
-feeds. Its eight readers are the next thing to enumerate, and they are one
-address rather than a bank.
-
-### Entry `0x40014C30` — decoded, `VERIFIED`
-
-Initialisation, not an event loop:
+The write in `0x400552A0`:
 
 ```text
-0x40014c34  sw $a0, 0x20($s1)             ; two arguments saved
-0x40014c36  sw $a1, 0x24($s1)
-0x40014c38  li $a3,0x10 ; jalrc [0xBFC16401]   ; syscall module 0x10, fn 0x10
-0x40014c44  sb $v0, 0x10($s1)
-0x40014c46  ...compare with -1
-0x40014c52  return -1 if it failed        ; init aborts
-0x40014c5a  [0($s1)] = [pool 0x40014CC4]  ; the sibling 0x40014C00
-0x40014c5e  [4($s1)] = $a0                ; build a struct from the arguments
-0x40014c64  [8($s1)] = 4($a1) (lw)
-0x40014c6c  sh [0xC($s1)], 2($a1) (lhu)
-0x40014c6e  li $a3,0x33 ; jalrc [0xBFC16BB1]   ; kernel syscall module 0x0f, fn 0x33
+0x400552a8  12 b3   lw $v1, dword_400552F0   ; $v1 = the VALUE 0x9FC15436
+0x400552ac  40 c3   sb $v0, 0($v1)          ; ONE BYTE stored at that address
 ```
 
-So: acquire a resource with a module-`0x10` service, abort on failure, then
-register a structure with the kernel (module `0x0f`, function `0x33`).
+The pool word at `0x400552F0` holds the address; the instruction stores a single
+byte through it. So `0x9FC15436` is a **byte state slot, not a pointer** — and it
+could not be a 32-bit pointer anyway, since `0x9FC15436` is only halfword-aligned
+(`0x436 mod 4 == 2`). What `0x400552A0` writes is its `u8` argument.
 
-### The bank table has five groups
+**The "eight readers" do not exist.** Searching the image for the four bytes
+`36 54 c1 9f` finds the address *literal* wherever it is embedded in a pool, so
+all eight matches are pool words, not loads or stores:
 
-`VERIFIED`. Groups at `0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800,
-0x900, 0xA00, 0xB00, 0xC00, 0xD00, 0xE00, 0xF00, 0x1000` — the README says
-blocks of 64 entries per group, with the length word at `0x2c` understating it.
-Earlier scans in this project covered only `0x100` and `0xA00`, which missed
-`music.ap`'s entry bank at table offset `0x100` region and the mask bank at
-`0x10c`.
+| file offset | guest | bank | what it is |
+|---|---|---|---|
+| `0x1754` | `0x40054f54` | `0x40054c00` | pool word |
+| `0x1a88` | `0x40055288` | `0x40054c00` | pool word (decodes as `slti/lw` because the bytes *are* the literal) |
+| `0x1af0` | `0x400552f0` | `0x40054c00` | pool word |
+| `0x2050` | `0x40095050` | `0x40094c00` | pool word |
+| `0x2624` | `0x400d4e24` | `0x400d4c00` | pool word |
+| `0x32f0` | `0x401152f0` | `0x40114c00` | pool word |
+| `0x3fa0` | `0x40194fa0` | `0x40194c00` | pool word |
+| `0x5710` | `0x40254f10` | `0x40254c00` | pool word |
 
-## Call graphs (older section) No verified edge exists yet from the Music application
-entry through All Songs to playback. This is the open task; see
-[m3u-integration.md](m3u-integration.md#handoff).
+`0x40055288` is the clearest demonstration: IDA decodes it as
+`slti $a0,0x36` because the bytes there *are* `36 54`. Chasing it as a function
+would have been the fourth false positive.
 
-## Traps to avoid, summarised
+**The method error, recorded so it is not repeated:** a byte search for an
+address finds the address constant, never its uses. To find readers one must
+resolve `lw`/`sb`/`lbu` instructions whose *operand* names the pool word — i.e.
+control-flow analysis, not a literal scan. This is the same class of mistake as
+the genre-table false positive.
 
-- NUL-splitting an extension array yields `FLACAPE`/`JPEGDSF`; the stride is what
-  matters.
-- `M3U.LIB` is a media library, not a playlist database, despite the name.
-- The extension masks are not bit selectors of the arrays; see
-  [m3u-integration.md](m3u-integration.md).
-- `atjboottool` output directories need a trailing separator.
+`0x9FC15436` sits `0x22` bytes past music.ap's declared data segment
+(`0x9fc15400..0x9fc15414`), so it is undeclared application scratch. It is
+written as a byte by `0x400552A0`; its readers are **not established**.
+
+### Neither recovered path leads to a stock UI or playback operation
+
+`0x400552A0` → `0x40614FC0` is a compute-a-status-then-dispatch pair, and the
+status slot it writes is only reachable by an unestablished reader. **Neither
+gives an interface our M3U code can call.**

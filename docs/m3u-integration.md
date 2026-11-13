@@ -155,20 +155,20 @@ path from it reaches `0x400552A0` → `0x40614FC0`, both decoded — see
 
 ## Next recommended step
 
-`music.mcg` id 45 (All Songs) never appears as a compared constant in the bank
-searched, so the menu path is reached some other way — most likely a scene or
-message number, not the node id. The cheapest next probe is to enumerate **all**
-`li $v0, imm16` constants compared with `xor`/`cmpi` across *every* music.ap bank
-that is known-live (entry bank `0x40014c00`, `0x40054c00`, `0x40614c00`), and
-look for a code `0x8000 + 45`. If it appears nowhere, the dispatch key is not
-the menu id and the `.mc`g tree must be translated first — that translation is
-itself a bounded task, since the tree's 139 nodes carry ids the runtime must
-consume somewhere.
+**Stop following the `0x9FC15436` / `0x400552A0` / `0x40614FC0` path** — it is
+compute-a-status-then-dispatch, its status slot has no established reader, and
+the "eight references" that motivated it were a search artefact (a byte scan for
+the address literal finds the literal in pools, not its uses).
 
-Alternatively, and possibly cheaper: `0x400552A0` writes its argument to the RAM
-global at **`0x9FC15436`**. Whatever reads that global next is the state the
-menu selection feeds, and it is a single address to trace rather than a bank to
-search.
+Go to the folder browser instead, as the task brief allows. `browser.ap` is where
+a user actually picks a file, so the selection callback there is the real
+selection path, and it is reached from `browser.ap`'s own entry point (header
+`+0x40`, same convention as music.ap's `0x40014C31` → `0x40014C30`). One command
+gives it: parse `browser.ap`'s header `+0x40`, clear the ISA bit, disassemble
+from that prologue, and follow.
+
+Whatever that reaches, verify each edge by resolving instructions, not by
+searching for address literals — the two errors above both came from the latter.
 
 ## Tests
 
