@@ -1104,3 +1104,93 @@ scratch; what the byte at `0x9FC15C88+0x31` selects; and the fs argument roles.
 Notable in the same pool: `0x600d118c = 0xbfc11cc1` (the second fs stub again)
 and `0x600d1184 = 0x601910b0` (a function in the *third* bank that also names
 this dispatcher), so the three banks form a connected group.
+
+## VERIFIED: the complete path-based file-open ABI
+
+**This is the result the project has been missing.** It comes from decoding the
+stock library-file creator `playlist.ap:0x40194c78` — the function
+`docs/library-builder.md` already documents as creating `MUSIC.LIB`, and the one
+our own expanded-library build exercises. It is known-working by construction.
+
+```text
+playlist.ap:0x40194c78   save 0x40, $ra,$s0-$s1
+                         arg0 = a library-type index (a byte)
+
+0x40194c8a  $v1 = index * 8
+0x40194c8c  $v0 = [0x40194F8C] + index*9     ; per-type struct
+0x40194c96  $a3 = 1
+0x40194c9a  jalrc [0x40194F90] = 0xBFC16409  ; module 0x10: fill(ptr, 0xFF, 8, 1)
+
+0x40194c9c  $v1 = *[0x9FC15410]              ; THE FILESYSTEM CONTEXT
+0x40194ca2  stack arg = 0
+0x40194ca6  $a1 = 0x3A ':'                   ; THE ROOT DRIVE
+0x40194cac  jalrc [0x40194F98] = 0xBFC1640D  ; module 0x11: cd(ctx, ':', 0, 0, 0)
+
+0x40194cb0  $a0 = 0x9FC15538                 ; the name buffer
+0x40194cb8  $v1 = index * 12                 ; THE 12-BYTE STRIDE
+0x40194cbe  $v0 = 0x40195244 + index*12      ; THE NAME TABLE
+0x40194cc2  $a1 = $v0
+0x40194cc4  jal 0x40194C00                   ; build the name into the buffer
+
+0x40194cd2  stack arg = 5                    ; FUNCTION 5 = OPEN
+0x40194cd6  $a0 = *[0x9FC15410]              ; the context
+0x40194cd8  $a2 = 0
+0x40194cda  $a3 = 0
+0x40194cde  jalrc [0x40194F98] = 0xBFC1640D  ; fs_open(ctx, name, 0, 0, 5)
+0x40194ce0  *[0x9FC1540C] = result           ; THE FILE HANDLE
+
+0x40194cf0  stack arg = 9                    ; FUNCTION 9 = SIZE
+0x40194cf6  $a1 = $s1                        ; an output buffer
+0x40194cfe  jalrc 0xBFC1640D                 ; fs_size(ctx, &size, handle, 0, 9)
+```
+
+Its pool, at guest `0x40194F8C`:
+
+| pool word | value | meaning |
+|---|---|---|
+| `0x40194F8C` | `0x9fc15838` | per-type struct array |
+| `0x40194F90` | `0xBFC16409` | **module `0x10` stub** (string/memory) |
+| `0x40194F94` | `0x9fc15410` | **the filesystem context** |
+| `0x40194F98` | `0xBFC1640D` | **module `0x11` stub — the filesystem** |
+| `0x40194F9C` | `0x9fc15538` | the name buffer |
+| `0x40194FA0` | `0x40195244` | **the name table** |
+| `0x40194FA4` | `0x9fc1540c` | **the file handle** |
+
+And the name table itself, at `0x40195244`:
+
+```text
+[0] "MUSIC.LIB"      [1] "M3U.LIB"      [2]       [3] "ALLSONG"
+```
+
+### The ABI, as a source-level interface
+
+```c
+/* VERIFIED from playlist.ap:0x40194c78, a function our own build exercises. */
+/* fs context: the word at 0x9FC15410, in playlist.ap's resident mapping.      */
+/* fs stub:    0xBFC1640D. Function id is the LAST argument (5th/stack slot). */
+
+fs_cd  (ctx, ':', 0, 0, 0);        /* op 8: change to the root drive       */
+h = fs_open(ctx, name, 0, 0, 5);   /* op 5: open. name is NUL-terminated.  */
+if (h == 0) { /* failure */ }
+fs_size(ctx, &size, h, 0, 9);      /* op 9: size of the opened file        */
+/* op 0xD read, 0xE write, 7 close — per docs/library-builder.md              */
+```
+
+**The decisive fact: `fs_open`'s second argument is a NUL-terminated filename.**
+The stock code passes a name from its own table, but nothing in the call ties it
+to that table. Supplying `"Playlists\foo.m3u"` opens that file.
+
+**So the opaque function-3 ABI is not needed at all.** The indexed-location path
+was one way in; a plain pathname is another, and it is already verified.
+
+### Corrections this forces
+
+- `get_location`'s "function 3" is **not** one of the documented filesystem
+  operations (`5/6/7/8/9/0xB/0xD/0xE/0x13/…`). It may not even be a file
+  operation. It is no longer on the critical path and should not be chased.
+- The claim that module `0x11` has "two stubs in live use" was **wrong**:
+  `0xbfc11cc0` in mengine.ap's mapping is **module `0x10`** (string/memory), not
+  the filesystem. Only `0xbfc11ccc` is module `0x11`. `DISPROVEN`.
+- The stub addresses are **per-module**: `0xBFC1640D` in playlist.ap's resident
+  mapping, `0xBFC11CCC` in mengine.ap's. The *function ids* are the kernel's and
+  are shared; the stub addresses are not.
