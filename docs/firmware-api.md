@@ -98,11 +98,42 @@ via a sector reader and an open-by-location callback. Both compile warning-free
 for MIPS16e and are covered by host tests, but **neither has run on the device**,
 and `m3udb`'s open callback is the seam a verified firmware ABI would fill.
 
+## MIPS16e addressing and the syscall convention
+
+`VERIFIED` — this is the entry that unlocks the rest.
+
+**Function pointers carry the MIPS16e ISA bit in bit 0.** The routine starts at
+`pointer & ~1`. Every pool pointer in an overlay bank follows it:
+
+| pool pointer | routine | what it is |
+|---|---|---|
+| `0x40014C31` | `0x40014C30` | **music.ap's declared entry point** (header `+0x40`) |
+| `0xBFC16BB1` | `0xBFC16BB0` | `li $v1,0x0f ; break` — kernel syscall stub |
+| `0xBFC16401` | `0xBFC16400` | `li $v1,0x10 ; break` — module `0x10` stub |
+| `0x400552A1` | `0x400552A0` | routine in bank `0x40054c00`, the mask-table bank |
+
+**A syscall is reached by `jalrc` through a pool pointer, not by `jal` to the
+stub.** The caller sets `$a3` to the function ID; the stub sets `$v1` to the
+module and `break` traps into the dispatcher; the result comes back in `$v0`.
+
+- Four register arguments `$a0`–`$a3`, plus a fifth at `0x10($sp)` where seen.
+- `$a3` = function ID. `$v1` = module, set by the stub.
+- Result in `$v0`.
+- Callers frequently load a context pointer and a destination buffer from RAM
+  globals first.
+
+Modules identified: `0x0f` kernel (`0x1c` millisecond clock, `0x35` RNG),
+`0x10`, `0x11` filesystem, `0x06` text conversion. **A stub's meaning is
+per-module** — `0xBFC16BB0` is module `0x0f` in playlist.ap's mapping and the
+same address is module `0x11` in music.ap's.
+
+`UNVERIFIED`: the semantics of specific function IDs beyond the three above.
+
 ## MIPS16e notes that matter for calling anything
 
 - `save 0xNN, $ra,$s0-$s1` is `0x64xx`; `restore` is its inverse; `jr $ra` is
   `0xE820`; `break` is `05 e8`.
 - `li $rd, imm8` puts the immediate in the **first** byte (`0b 6a` = `li $v0,11`).
   Getting this wrong silently corrupts every immediate-based scan.
-- Function pointers into `0xbfc16xxx` should be checked against the trap-table
-  pattern before use.
+- `save`/`restore` are `0x64xx`-style extended pairs; `jr $ra` is `0xE820`;
+  `break` is `05 e8` and is the second halfword of a syscall stub, not an error.

@@ -51,7 +51,8 @@ project real time:
 
 ## Bank tables
 
-Group 3 at table offset `0x100`, group 4 at `0xA00`, 12-byte triples
+`0x100, 0x200, 0x300, 0x400, 0x500, 0x600, 0x700, 0x800, 0x900, 0xA00, 0xB00,
+0xC00, 0xD00, 0xE00, 0xF00, 0x1000` — twelve-byte triples
 `{file offset, load address, size}`. `VERIFIED`. Reading group 4 off by four
 bytes yields plausible but wrong banks; the true start is `0xA00`.
 
@@ -76,6 +77,18 @@ millisecond clock, `0x35` the RNG), `0x11` filesystem, `0x06` text conversion.
 So a stub address is only meaningful with its module attached — the same point as
 the overlay windows above. `0xBFC16BB5` and `0xbfc16a25` were both read as error
 addresses; that reading is withdrawn.
+
+## Application entry points
+
+`VERIFIED` for music.ap. The YQHX header's `+0x40` holds a pointer to the
+application entry; clearing the MIPS16e ISA bit gives the routine. For
+`music.ap` that is `0x40014C30`, in bank `0x40014c00` (size `0xcc`), and its
+prologue is `save 0x30, $ra,$s0-$s1` with two arguments saved to the frame.
+
+Because banks load on demand, **this header pointer is the way in** — callers do
+not need a userspace loader, and a bank with no static references is perfectly
+normal. See [reverse-engineering.md](reverse-engineering.md) for the verified
+chain from here.
 
 ## Subsystems
 
