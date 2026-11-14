@@ -1560,3 +1560,27 @@ The RAM global `0x9FC15636` is a redraw/scroll flag (browser.ap data segment
 state struct layout. `UNVERIFIED`: which function populates the state struct
 with actual directory entries; where the row-text provider reads filenames
 from; and what the function at `$a0` (frame+8) does.
+
+## VERIFIED: the scroll functions are dispatched from a different overlay bank
+
+The scroll-next (`0x487144A9`) and scroll-prev (`0x487146CD`) function pointers
+are stored in a literal pool at file `+0x12938`/`+0x1293c`, in bank
+`0x40D14E00` (browser.ap file `0x12500`, size `0x600`). That bank is
+**different** from the folder-list overlay (`0x48714400`).
+
+The pool also contains `0x9FC155A4` (a RAM pointer) at `+0x12934`. The function
+ends with `jrc $ra` at `+0x12930`, and the pool follows.
+
+**The architecture has three layers:**
+
+| layer | bank | role |
+|---|---|---|
+| folder-list overlay | `0x48714400` | scroll-next and scroll-prev: manage the state struct |
+| input dispatcher | `0x40D14E00` | loads the scroll-function pointers from its pool and calls them |
+| caller | unknown | populates the state struct and passes it to the dispatcher |
+
+The input dispatcher is **not** the list-population function. It routes wheel/key
+events to the scroll functions. The list-population function is upstream.
+
+`VERIFIED`: the scroll-function pointers are in bank `0x40D14E00`'s pool, not in
+the folder-list bank. The input dispatcher is in a third bank.
