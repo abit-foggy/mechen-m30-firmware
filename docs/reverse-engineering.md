@@ -1311,3 +1311,33 @@ the handle refers to.
 `VERIFIED`: the seek+read call shapes, the fs context and handle addresses, the
 module-0x11 stub. `INFERRED`: that the handle refers to M3U.LIB (because
 music.ap has both filenames in its table and the type is selected by index).
+
+## VERIFIED: the browser's extension filtering is mask-based, not string-based
+
+browser.ap's extension array at bank `0x71352500` bank+`0x688` (guest
+`0x71352b88`, file `+0xc188`) holds 31 four-byte extension slots. No code
+references the array's guest address directly -- it is reached through the bank
+base `0x71352500`, which is referenced only from the bank table.
+
+The builder doc says the folder views in `browser.ap` and `music.ap` use
+MUSIC.LIB's mask (`0x7e190ea0`) OR'd with `0x00400000`. The mask bits
+correspond to indices in the extension array. Files whose extension index has
+a bit set in the mask are shown.
+
+Since `M3U` is not in the extension array, it has no corresponding bit, so
+`.m3u` files are not shown regardless of the wildcard slots. The `**` wildcard
+does not override the mask — it is a fallback classification for files that
+match no named extension, not a bypass of the mask filter.
+
+To make `.m3u` visible in the browser, two things must change:
+1. `M3U` must be added to the extension array (63 free slots are available).
+2. The corresponding bit must be set in the folder-view mask.
+
+The mask location is not yet decoded: the builder doc mentions `0x00400000`
+being OR'd in "separately" but does not identify the instruction or the RAM
+address. The extension-index-to-bit mapping is also not decoded ("the bit
+order inside the driver isn't decoded" per the builder doc).
+
+`UNVERIFIED`: the exact mask location, the bit-to-index mapping, and whether
+adding a slot shifts the existing indices (which would corrupt every other
+extension's classification).
