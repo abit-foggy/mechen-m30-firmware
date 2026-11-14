@@ -752,3 +752,18 @@ Adapter implication for Phase B/D: a virtual folder must either populate the
 row cache (0x9FC155A4, 12-byte {id, name_len, name_ptr} entries) and answer
 the record fetch, or hook the dispatch at the wrapper. Still unresolved:
 whether this record stream is the file list or a menu registry.
+
+## Session 32b — the Phase B PoC runs the stock bank on a virtual list
+
+`tools/scroll/vlist.c/.ld` + `vlisttest.py` drive the real stock dirlist bank
+(0x48714400, stock bytes, pool pointers redirected) with a static virtual
+track list under `qemu-mipsel-static -cpu 24Kc`. All in-emulation checks and
+driver assertions pass. Three bank behaviours were established empirically
+and recorded in reverse-engineering.md: UPDATE=2 marks page movement (MODE
+0/1/2, with 4/5 only on the patched multi-step path); the bank shifts the
+row cache itself on slides and reaches past an 8-row window; the bank moves
+string CONTENT through the row-cache name pointers, so adapters must supply
+writable text and re-fill on every page move. The selection contract —
+dispatcher slot arithmetic resolves to the selected virtual entry after
+every stock state update — held across the whole 24-event script including
+four page slides.

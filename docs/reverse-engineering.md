@@ -1886,3 +1886,44 @@ files are invisible to the stock browser at both layers.
 `UNVERIFIED`: whether this record stream is the browser's file list or a
 menu/handler registry (the `a0=0` handler call and 0x8014 status suggest a
 menu-item registry); the remaining record fields; the service's op table.
+
+## VERIFIED under QEMU: the dirlist bank maintains the row cache itself
+
+`tools/scroll/vlist.c` (run by `tools/scroll/vlisttest.py` under
+`qemu-mipsel-static -cpu 24Kc`) drives the **real stock dirlist bank**
+(`0x48714400`, stock bytes, pool pointers redirected by `testbank.py`'s map)
+with a static 12-entry virtual track list and checks the selection contract
+at every step of a 24-event script. The bank's behaviour, observed directly:
+
+1. **UPDATE (`state+0x15`) = 2 marks every page movement.** MODE
+   (`state+0x14`): `0` = no slide, `1` = down-slide, `2` = up-slide. The
+   `4`/`5` pair documented from the patched blob appears only on multi-step
+   moves; single-line slides use `1`/`2`.
+2. **On a slide the bank shifts the row cache itself** — the adapter does not
+   need to move rows for a single-line slide. The shift demonstrably reaches
+   **beyond an 8-row window** (it pulls rows from past `cache+96`), so the
+   adapter's cache region is sized 12 rows and the two lookahead rows are
+   filled too.
+3. **The bank moves string CONTENT through the row-cache name pointers**
+   during slides, via the libc-copy call the harness stubs (with read-only
+   literals, literal 0's bytes became literal 1's while every pointer stayed
+   constant). Therefore an adapter must point rows at **writable buffers**
+   and re-fill them on every page move; the display contract is the content
+   the pointer names, never the pointer identity.
+4. **The selection contract holds:** after every stock state update across
+   the whole script — including four page slides — the dispatcher's verified
+   arithmetic `cache + (slot-1)*12`, slot = `state+0x10`, resolves to exactly
+   the selected virtual entry (`text_eq` against the static table). OK
+   retrieves that entry; a state snapshot/restore returns the parent folder
+   with its pre-open selection.
+
+This is the minimum verified interface Phase B asked for: a provider that
+fills the 12-byte rows `{absolute id, marker 16, name pointer→writable text}`
+for the window the state describes, re-fills on `UPDATE == 2`, and answers
+selection through `state+0x0E - 1`. It is **QEMU-tested against real stock
+code**, not hardware.
+
+`UNVERIFIED`: the renderer (no display code runs here); whether the
+record-fetch side (`0x9FC155F8` descriptor + kernel service) is the file-list
+provider or a menu registry; the production page size (the dispatcher's
+verified slot bound is 1..7, the bank's shift window is 8).

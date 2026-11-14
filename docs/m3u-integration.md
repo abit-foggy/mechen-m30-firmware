@@ -278830,3 +278830,25 @@ Short form for the adapter work:
 Phase B next step: decide the hook point — populate the row cache + answer
 the record fetch, or hook the wrapper `0x40D15270` — then prove it with the
 QEMU scroll harness extended to a static virtual list.
+
+## The Phase B proof of concept (stock bank + static virtual list) [qemu]
+
+`tools/scroll/vlist.c` + `vlisttest.py` + `vlist.ld`: the REAL stock dirlist
+bank (`0x48714400`, stock bytes) runs under QEMU with a static 12-track
+virtual list. All checks pass, including the selection contract after every
+stock state update across four page slides. Newly verified about the bank:
+
+- UPDATE=2 marks page movement (MODE 0/1/2 = none/down-slide/up-slide;
+  4/5 only on the patched multi-step path);
+- the bank shifts the row cache itself on a slide, and reaches past an
+  8-row window (adapter cache = 12 rows with 2 lookahead rows filled);
+- the bank moves string CONTENT through the name pointers (libc copy), so
+  rows must point at writable buffers the adapter re-fills;
+- Back is modelled as a state snapshot/restore: the parent folder and its
+  pre-open selection come back exactly.
+
+Adapter recipe for Phase D, all verified: fill 12-byte rows
+`{id (0-based absolute), marker 16, name pointer → writable text}` for the
+window at `state+8..+0xA`; refill when `UPDATE == 2`; answer selection from
+`state+0x0E - 1`; wrap the virtual folder's lifetime in a state
+snapshot/restore.
