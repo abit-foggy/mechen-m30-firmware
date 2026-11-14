@@ -7,6 +7,9 @@
  * Design notes that the tests pin:
  *  - input is consumed a chunk at a time; no whole playlist is ever resident;
  *  - LF and CRLF line endings, and a final line with no terminator;
+ *  - a leading UTF-8 BOM is skipped, so a playlist written by a Windows editor
+ *    still has its '#EXTM3U' line recognised as a comment and its first path
+ *    unpoisoned;
  *  - '#' begins a comment (covers EXTINF and EXTM3U) and is skipped;
  *  - blank lines are skipped, not returned;
  *  - a path is stored relative-resolved: the caller passes the playlist's own
@@ -64,6 +67,7 @@ struct m3u {
     unsigned entries;        /* entries handed out so far */
     int done;                /* error or END already reported */
     int status;              /* last error, for M3U_ERR_STATE */
+    int bom_checked;         /* the leading UTF-8 BOM was looked for already */
 };
 
 /* Initialise. `dir` must not be NULL; "" means "no prefix". The trailing '/'

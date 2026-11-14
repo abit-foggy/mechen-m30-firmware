@@ -132,7 +132,15 @@ int m30fs_init(struct m30fs_file *f, u32 ctx, const char *path)
     if (!f || !path) {
         return M30FS_ERR;
     }
+    /* zero the state first, so a failed open always leaves the file safe to
+     * close; then refuse to run with no stub installed -- a module that
+     * forgets m30fs_set_stub gets a clean error, not a jump through zero */
     f->handle = 0;
+    f->size = 0;
+    f->pos = 0;
+    if (!fs) {
+        return M30FS_ERR;
+    }
     f->size = 0;
     f->pos = 0;
 

@@ -22,6 +22,7 @@ int m3u_init(struct m3u *m, const struct m3u_io *io, const char *dir)
     m->entries = 0;
     m->done = 0;
     m->status = M3U_OK;
+    m->bom_checked = 0;
 
     m->dir_len = 0;
     if (dir) {
@@ -79,11 +80,39 @@ static int fill(struct m3u *m)
     return 0;
 }
 
+/* Skip a UTF-8 BOM at the very start of the stream. A BOM left in place turns
+ * the first line into a path that cannot be opened and hides '#EXTM3U' from the
+ * comment test, so it has to go before the first line is read. Short inputs are
+ * simply not a BOM. Returns 0, or M3U_ERR_IO if the stream fails. */
+static int skip_bom(struct m3u *m)
+{
+    while (m->buf_len - m->buf_pos < 3 && !m->at_eof) {
+        int rc = fill(m);
+        if (rc < 0) {
+            return rc;
+        }
+    }
+    if (m->buf_len - m->buf_pos >= 3 &&
+        (unsigned char)m->buf[m->buf_pos] == 0xEF &&
+        (unsigned char)m->buf[m->buf_pos + 1] == 0xBB &&
+        (unsigned char)m->buf[m->buf_pos + 2] == 0xBF) {
+        m->buf_pos += 3;
+    }
+    return 0;
+}
+
 /* Read one line into m->line, NUL-terminated, terminators stripped. Returns
  * M3U_OK, M3U_END (clean, nothing left), or a negative status. */
 static int read_line(struct m3u *m)
 {
     m->line_len = 0;
+    if (!m->bom_checked) {
+        int rc = skip_bom(m);
+        if (rc < 0) {
+            return rc;
+        }
+        m->bom_checked = 1;
+    }
     for (;;) {
         char c;
         if (m->buf_pos >= m->buf_len) {

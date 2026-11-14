@@ -6,9 +6,10 @@ fixtures generated here, so the tests exercise exactly the source the player
 will run. Nothing is flashed and no stock firmware is modified.
 
 Covered: LF and CRLF endings, a final line without a terminator, comments and
-EXTM3U/EXTINF, blank lines, relative paths, directory prefixing, order
-preservation, the empty playlist, a long-but-legal path, bounds overflow, and
-the entry limit.
+EXTM3U/EXTINF, blank lines, a leading UTF-8 BOM (before a comment, before a
+track, alone, before a comment-only file), relative paths, directory
+prefixing, order preservation, the empty playlist, a long-but-legal path,
+bounds overflow, and the entry limit.
 
 Usage: test_m3u.py   (exits non-zero on any failure)
 """
@@ -66,6 +67,26 @@ CASES = [
     ("already-slashed-dir", "Playlists/",
      b"s.flac\n",
      ["E Playlists/s.flac", "END 1"], 0),
+
+    ("bom-lf", "d",
+     b"\xEF\xBB\xBF#EXTM3U\ntrack.flac\n",
+     ["E d/track.flac", "END 1"], 0),
+
+    ("bom-crlf", "d",
+     b"\xEF\xBB\xBF#EXTM3U\r\na.flac\r\n",
+     ["E d/a.flac", "END 1"], 0),
+
+    ("bom-before-track", "d",
+     b"\xEF\xBB\xBFb.flac\n",
+     ["E d/b.flac", "END 1"], 0),
+
+    ("bom-alone", "d",
+     b"\xEF\xBB\xBF",
+     ["END 0"], 0),
+
+    ("bom-comment-only", "d",
+     b"\xEF\xBB\xBF#x\n",
+     ["END 0"], 0),
 
     ("spaces-in-name", "d",
      b"My Great Song (Remix).flac\n",
