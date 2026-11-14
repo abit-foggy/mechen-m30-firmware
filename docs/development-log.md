@@ -378,3 +378,25 @@ step, along with the one remaining filesystem unknown -- whether op `0xD` is
 `(buf, n, handle)` or `(handle, buf, n)`, which the adapter mirrors from the
 stock write helper by symmetry and which one read-only hardware check would
 settle.
+
+## Session 15 continued — the pipeline exists on the firmware side
+
+`tools/fw/m30playlist.c` wires the adapter to the parser: 240 bytes of MIPS16e.
+`m30pl_open` sets the per-module stub, opens by path, queries the size;
+`m30pl_next` pulls bytes through the 4 KB bounded buffer into the existing
+`m3u` reader; `m30pl_close` is idempotent.
+
+The host test caught two wiring mistakes. `m3u_init` validates its io, so the
+read callback must be installed before it runs. And the builder's call shapes
+put the handle in the FOURTH argument of seek and read — the adapter was passing
+0, which the kernel would have read from no file at all. Both fixed.
+
+The read path also now implements the builder's 4 KB constraint — transfers
+split at the next 4096-byte boundary, seek only when the handle is not already
+positioned, one sector buffer on top so callers see an ordinary byte stream and
+the kernel only sees aligned whole-sector reads. Padding behind the logical end
+of file is never exposed: reads clamp to the size op 9 reported.
+
+Mocked host test: 10 checks including order preservation with duplicates,
+playlist-relative prefixes, malformed lines skipped, empty playlists ending
+cleanly, and missing files reporting OPEN_ERR.
