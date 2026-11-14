@@ -523,3 +523,24 @@ The chain from the Music app through the shared reader bank to the filesystem
 is now verified at every edge. What remains is to determine which library type
 the handle is opened for -- which is a hardware check (navigate to an m3u
 playlist in the Music menu) or a trace of the open call.
+
+## Session 21 — the browser's extension filtering is mask-based
+
+The browser does not filter by extension strings. It filters by a bitmask over
+extension-array indices. browser.ap's extension array at bank `0x71352500`
+bank+`0x688` has 31 four-byte slots (28 named extensions plus the wildcards **,
+*f, *d), followed by 63 free slots. No code references the array's guest
+address directly; it is reached through the bank base.
+
+The folder views use MUSIC.LIB's mask (0x7e190ea0) OR'd with 0x00400000. Files
+whose extension index has a bit in that mask are shown. Since M3U is not in the
+array, it has no bit, so .m3u files are invisible. The ** wildcard does not
+override the mask.
+
+Making .m3u visible requires adding M3U to the array and setting the
+corresponding bit in the folder-view mask. The mask location and the
+bit-to-index mapping are not yet decoded. Without the mapping, adding a slot
+risks shifting every other extension's classification.
+
+This is a filter issue, not a parser or filesystem issue. The M3U files exist,
+the filesystem can open them, and the parser can read them.
