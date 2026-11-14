@@ -485,3 +485,23 @@ code rather than in a new module.
 This changes the implementation direction: the previous sessions built a
 parallel filesystem+parser pipeline (`m30fs`+`m30playlist`) that may be
 unnecessary if the stock path just needs a small fix.
+
+## Session 19 continued — FUN_71352810 decoded, M3U.LIB structure mapped
+
+The per-track search function is now decoded from bank `0x71352500` in
+music.ap. It searches 8-byte entries starting at sector `0xB15` of a
+preallocated file, 64 per sector, limited to 4000. The search key is an
+8-byte file location. The pool words are bank addresses in the `0x78` group,
+not RAM.
+
+The actual backup M3U.LIB was inspected: it has real data past the ten
+playlist records. The playlist records form a doubly-linked list with TWO
+16-byte location fields each (+0xa9 and +0xe8). The backup's titles are
+"idk.m3u8" etc. -- not the user's playlists -- because the card was rebuilt
+after the backup was taken. The format is the same.
+
+This confirms M3U.LIB is not just a list of playlist headers: it contains
+per-track entries that the reader searches. The stock firmware has a complete
+M3U playlist browsing path. Whether it works for the user's ten playlists
+depends on whether the Music app actually opens M3U.LIB and reads those
+records, which is the next thing to verify on hardware.

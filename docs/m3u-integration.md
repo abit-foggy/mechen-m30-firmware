@@ -272,3 +272,37 @@ is unmounted.
 Working tree clean apart from the user's pre-existing theme work (`README.md`,
 `build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
 pushed. No `MECHEN_M30.HEX` built.
+## Tests
+
+`test_m3u` 18, `test_m3uw` 26, `exttest` 52, `test_m3fs`, `test_m3udb`,
+`test_m3uengine`, `fw007test` — **all pass**. `test_m3udb`'s card
+path-resolution check reports **NOTE/SKIPPED**, not a pass, because the SD card
+is unmounted.
+
+## Latest commits
+
+`e7197f7` pipeline logged · `c69be2f` m30playlist wired to m30fs and the parser ·
+`ab4271f` handle restored to seek/read + 4 KB bounded buffer ·
+`30141fb` the verified path-based open ABI · `2648b14` mocked adapter test ·
+`e723917` two-caller comparison.
+
+Working tree clean apart from the user's pre-existing theme work (`README.md`,
+`build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
+pushed. No `MECHEN_M30.HEX` built.
+## Tests
+
+`test_m3u` 18, `test_m3uw` 26, `exttest` 52, `test_m3fs`, `test_m3udb`,
+`test_m3uengine`, `fw007test` — **all pass**. `test_m3udb`'s card
+path-resolution check reports **NOTE/SKIPPED**, not a pass, because the SD card
+is unmounted.
+
+## Latest commits
+
+`e7197f7` pipeline logged · `c69be2f` m30playlist wired to m30fs and the parser ·
+`ab4271f` handle restored to seek/read + 4 KB bounded buffer ·
+`30141fb` the verified path-based open ABI · `2648b14` mocked adapter test ·
+`e723917` two-caller comparison.
+
+Working tree clean apart from the user's pre-existing theme work (`README.md`,
+`build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
+pushed. No `MECHEN_M30.HEX` built.
