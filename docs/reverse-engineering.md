@@ -1701,3 +1701,32 @@ does; what function is stored at each pool address; whether the entry at
 The `index*4` stride suggests the entry array uses **4-byte entries**, not
 12-byte row-cache entries. This is a different array from the row cache the
 scroll functions read.
+
+## VERIFIED: the entry-table computation details
+
+From the IDA disassembly of bank `0x40D14E00` (browser.ap file `0x12500`):
+
+```text
+0x40d15016  addu  $v0, $v1              ; combine the index components
+0x40d15018  sll   $v1, $v0, 2           ; multiply by 4 (the entry stride)
+0x40d1501a  lw    $v0, dword_40D15234   ; load the table base
+0x40d1501c  addiu $v0, -0xC             ; adjust by -12
+0x40d1501e  addu  $v0, $v1, $v0         ; entry_address = base - 12 + index*4
+0x40d15020  sw    $v0, 0($s1)           ; store on the frame
+```
+
+The `-0xC` adjustment means the array entries start **12 bytes before** the
+table base pointer. The base likely points past a 12-byte header, or the base
+is the address of a field that is 12 bytes past the array start.
+
+The index is **zero-based**: index 0 gives `base - 12`, index 1 gives
+`base - 8`, etc.
+
+The resulting address is stored on the frame and used later (the callback
+receives it or its contents). The 4-byte stride means each entry is a
+**32-bit word** — either a pointer or a packed identifier.
+
+`VERIFIED`: the computation sequence, the stride (4), the adjustment (-12),
+and the zero-based indexing. `UNVERIFIED`: what the 32-bit values in the
+entries contain; whether they are pointers, offsets, or identifiers; where the
+table base comes from.

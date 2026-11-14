@@ -692,3 +692,12 @@ row-cache entries the scroll functions read. The relationship between the two
 arrays is undecoded.
 
 Recorded in reverse-engineering.md and the handoff (3eecd17).
+
+## Session 30 — the entry-table computation decoded
+
+The selected-file dispatcher's entry-address computation is now decoded:
+`entry_address = table_base - 12 + index * 4`. The index is zero-based, the
+stride is 4 bytes, and the -12 adjustment means the entries start 12 bytes
+before the table base pointer. Each entry is a 32-bit word.
+
+Recorded in reverse-engineering.md and the handoff.
