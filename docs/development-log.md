@@ -645,3 +645,17 @@ data pointer, and +12 is a callback pointer called with jalrc.
 
 The category byte at +5 is compared against an active filter, not against a
 static extension list. Which function writes to +5 is still unknown.
+
+## Session 27 — the three-layer list architecture
+
+The scroll-function pointers are in a literal pool in bank 0x40D14E00, not in
+the folder-list overlay 0x48714400. The architecture has three layers: the
+folder-list overlay (scroll functions), an input dispatcher in a different
+bank (loads the scroll-function pointers from its pool and calls them), and an
+upstream caller that populates the state struct.
+
+The dispatcher is not the list-population function. The caller that fills the
+state struct with actual directory entries is upstream of the dispatcher, and
+finding it requires tracing back from the dispatcher's state argument.
+
+Recorded in reverse-engineering.md and the handoff (f2e8c54).
