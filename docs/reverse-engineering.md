@@ -1927,3 +1927,88 @@ code**, not hardware.
 record-fetch side (`0x9FC155F8` descriptor + kernel service) is the file-list
 provider or a menu registry; the production page size (the dispatcher's
 verified slot bound is 1..7, the bank's shift window is 8).
+
+## The ATJ2127 SDK (Suber/PD196_ATJ2127) maps the browser structures
+
+Local copy: `/home/foggy/m30/community/pd196` (read for architecture only;
+Actions-copyrighted code is not imported into the firmware).
+
+**`file_brow_t` — the 12-byte row record, `psp_rel/include/enhanced.h:370`:**
+
+```c
+typedef struct {
+    uint8 ext[4];     /* extension — NOT necessarily NUL-terminated */
+    uint8 name_len;   /* name length, bytes */
+    uint8 reserve[3];
+    uint8 *name_buf;  /* per-row WRITABLE name buffer */
+} file_brow_t;
+```
+
+The M30 row cache is this struct. The earlier {id, marker, pointer} model
+was synthetic harness data — corrected in commit `8df33cc`.
+
+**`dir_control_t` (`case/inc/common_ui.h:160`) — the M30 list state,
+field for field:**
+
+| M30 offset | SDK field | notes |
+|---|---|---|
+| `+0x00` | `dir_disk` | |
+| `+0x01` | `file_source` | fsel_type_e |
+| `+0x02` | `one_page_count` | the page size |
+| `+0x04` | `dir_com *` | command block |
+| `+0x08` | `top` (1-based) | |
+| `+0x0A` | `bottom` | |
+| `+0x0C` | `list_total` | |
+| `+0x0E` | `list_no` | 1-based absolute |
+| `+0x10` | `active` | 1..one_page_count |
+| `+0x12` | `old` | previous line |
+| `+0x14` | `update_mode` | LIST_UPDATE_NULL/NEXT/PREV/REUPDATE/HEAD/TAIL = 0/1/2/3/4/5 |
+| `+0x15` | `draw_mode` | |
+| `+0x16` | `enter_dir` | |
+
+The PoC's observed bank flags now have SDK names: MODE 1/2 = LIST_UPDATE_
+NEXT/PREV (single-line slide), 4/5 = HEAD/TAIL (full reload).
+
+**RAM layout:** `g_dir_browser` (12 bytes, `dir_brow_t` = {u16 dir_total,
+u16 file_total, u8 name_len, u8 layer_no, u8 reserve[2], u8 *name_buf}) at
+`0x9FC15598`, **immediately followed by `g_file_list` at `0x9FC155A4`** —
+7 rows (6-line page + 1), matching the SDK's `LIST_NUM_ONE_PAGE_MAX + 1`
+buffers. `dir_total`/`file_total` split confirmed by the dispatcher's
+bounds checks.
+
+**The M30 dispatcher's directory branch is the SDK's
+`directory_msg_deal_gui` directory case, verbatim in semantics**
+(`case/ap/common/common_ui/ui_directory2.c:300`):
+
+```text
+0x40d15078  if (g_dir_browser.layer_no >= 8) exit        ; SDK: MAX_DIR_LAYER guard
+0x40d15082  idx = list_no - front_count
+0x40d1508e  fsel_browser_enter_dir(SON_DIR=1, idx, &g_dir_browser)   ; 0x780db200
+0x40d150a4  if (dir_total == 0 && file_total == 0):
+                fsel_browser_enter_dir(PARENT_DIR=2, 0, ...)         ; SDK verbatim
+                gui_dialog_msg(DIALOG_MSG, ..., S_FILE_NO_FILE)      ; 0x48ad4a2d, 0x8000/3/0x8018
+            else:
+                enter_dir = 1; update_mode = LIST_UPDATE_HEAD(4); draw_mode = 3
+0x40d150ec  else: RESULT_DIR_ERROR_ENTER_DIR (0x7EFF.. stored)
+```
+
+So the M30 IS the SDK architecture: `fsel_browser_enter_dir` = `0x780db200`,
+the input dispatcher = `directory_msg_deal_gui`, the selected-record fetch =
+`cur_file = g_file_list + (active-1)` (the dispatcher's computed address),
+and the file branch's wrapper call = the select/classify/get_location
+sequence. The SDK's classifier `dir_file_type` compares **exactly 4 bytes**
+(`strncmp(ext, ext_vec_rom[j], 4)`) over 5 class bitmaps —
+`virtual_ext_class()` implements the M3U/M3U8 side of that contract.
+
+**The mask constants, decoded** (`case/inc/case_type.h:69`):
+`MUSIC_BITMAP 0x7e010e80`, `ALLFILE_BITMAP 0x00000002`, `ALLDIR_BITMAP
+0x00000001`, `ALLALL_BITMAP 0x00000004`; `rom_ext_name[31][4]` maps
+**bit[30] = entry[0] (MP3) descending**, and the trailing wildcard entries
+map to the low bits (dirs/all-files/all). The M30's
+`0x7e190ea0` decodes perfectly against browser.ap's 31-slot table with this
+order: MP3 WMA WAV AAC FLAC APE (bit30..25), DSF DFF OGG (bit20,19,16),
+MP1 MP2 M4A (bit11,10,9), ACT AIF (bit7,5) — the bit→slot mapping is no
+longer guesswork. M3U/M3U8 have no slot in any table, so no mask admits
+them; only a wildcard class could, and the device's behaviour (playlists
+invisible in the browser) shows the browser's mask does not use it for
+arbitrary files.
