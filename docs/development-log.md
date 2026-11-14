@@ -544,3 +544,26 @@ risks shifting every other extension's classification.
 
 This is a filter issue, not a parser or filesystem issue. The M3U files exist,
 the filesystem can open them, and the parser can read them.
+
+## Session 22 — the M3U.LIB mask does not select M3U files
+
+A critical disproof. The M3U.LIB mask 0x00080400 has bits 10 and 19 set.
+Mapping those against the driver's 31-slot extension table gives DSF (slot 10)
+and MP1 (slot 19) — audio formats. No standard bit ordering maps them to M3U
+or M3U8.
+
+This disproves the assumption, held across multiple sessions, that the
+M3U.LIB builder selects .m3u files by setting extension-mask bits. The mask
+selects audio formats, not playlist formats. The builder must use a different
+mechanism to find .m3u files.
+
+The builder doc says the M3U scanner uses FUN_40094f2c to classify extensions
+into tag-reader types (0-8), where type 8 is "anything else." .m3u files would
+be type 8, suggesting the scanner finds them through the fallback path. This
+means the extension mask approach to making .m3u files visible in the browser
+is likely wrong too -- the browser may use a different filtering mechanism
+than the extension mask.
+
+The implementation approach needs to change. Instead of patching masks, we
+need to understand how the M3U scanner actually finds .m3u files, and how the
+browser actually filters files.
