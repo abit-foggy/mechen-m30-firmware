@@ -1252,3 +1252,62 @@ and lost when the bank is swapped.
 function to do the reads); whether the ten playlist records' `+0xa9` location
 selects the starting sector per playlist or whether `0xB15` is a global start;
 what the eight bytes in each entry contain.
+
+## VERIFIED: FUN_71352810 reads through music.ap's filesystem globals
+
+The bank function at `0x7815B4D8` (bank `0x7815B200`, music.ap file `0x11200`,
+size `0x5E0`) is the seek-and-read helper that `FUN_71352810` calls. Its pool
+at guest `0x7815B580`:
+
+| pool word | value | what |
+|---|---|---|
+| `0x7815B580` | `0x9FC1598C` | the current sector cursor |
+| `0x7815B584` | `0x9FC1598E` | a flag or secondary pointer |
+| `0x7815B588` | `0x9FC15980` | **the filesystem context** |
+| `0x7815B58C` | `0x9FC1597C` | **the file handle** |
+| `0x7815B590` | `0xBFC16BB5` | **module `0x11` syscall stub** (music.ap's mapping) |
+| `0x7815B594` | `0x7815B5E0` | the 64-entry sector buffer |
+
+The function's behaviour:
+
+```text
+0x7815b4d8  save 0x30
+0x7815b4dc  $s1 = $a0 (the sector argument)
+0x7815b4de  $a1 = *(u16*)0x9FC1598C       ; the current cursor
+0x7815b4e6  if (cursor == sector) → return 1  ; already there
+0x7815b4ea  if (cursor == 0xFFFF) → need seek
+0x7815b50c  $a3 = *(0x9FC15980)           ; the fs CONTEXT
+0x7815b50e  $v1 = *(0x9FC1597C)           ; the fs HANDLE
+0x7815b510  $a2 = 0xB                     ; op = SEEK
+0x7815b512  $a0 = *context                ; the context value
+0x7815b514  $a1 = sector << 8             ; the byte offset
+0x7815b518  $a3 = *handle                 ; the handle value
+0x7815b51e  jalr $v0                      ; FS_OP(ctx, offset, ?, handle, 0xB)
+
+0x7815b526  $a1 = 0xD                     ; op = READ
+0x7815b528  $a0 = *context
+0x7815b52a  $a3 = *handle
+0x7815b530  $a1 = 0x7815B5E0              ; the 64-entry buffer
+0x7135b532  $a2 = 0x200                   ; 512 bytes
+0x7815b536  jalrc $v0                     ; FS_OP(ctx, buf, 512, handle, 0xD)
+0x7815b53a  *(u16*)0x9FC1598C = sector    ; update the cursor
+```
+
+The syscall stub at `0xBFC16BB4` in **music.ap's** resident is
+`li $v1,0x11 ; break` — module `0x11`, the filesystem.
+
+**The fs context at `0x9FC15980` has 83 references in music.ap. The file
+handle at `0x9FC1597C` has 14 references.** Both are music.ap data-segment
+globals (the segment is at `0x9fc15400`, so they are at offsets `+0x580` and
+`+0x57c`).
+
+**This confirms FUN_71352810 reads through music.ap's own filesystem
+globals.** The context and handle are the same ones music.ap uses for its
+library access. Since the filename table at `0x7805b498` has `MUSIC.LIB` at
+index 0 and `M3U.LIB` at index 1, and the library-type selection routine at
+`0x7805b370` selects by index, whichever type music.ap last opened is the file
+the handle refers to.
+
+`VERIFIED`: the seek+read call shapes, the fs context and handle addresses, the
+module-0x11 stub. `INFERRED`: that the handle refers to M3U.LIB (because
+music.ap has both filenames in its table and the type is selected by index).
