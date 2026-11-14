@@ -453,3 +453,35 @@ and the builder's loader pattern (`loader.c` copies chunks to `0xbfc3c000`) is
 the proven delivery mechanism, but nothing calls the reader yet. Deciding the
 entry point -- the M3U.LIB scan or the `s_m3ulist_*` UI handlers -- is the next
 step, and it needs more decoding before a hook can be placed.
+
+## Session 18 — the user-playlist system, and a change of direction
+
+**The most important finding of the project so far, and it came from reading the
+existing documentation rather than from disassembly.** The builder doc records a
+**user playlist system** that every previous session missed because the search
+focused on the extension table and `get_location`.
+
+The builder writes M3U.LIB as a **two-level structure**: ten 256-byte playlist
+records at `0x200`, then per-track 8-byte entries in the preallocated space
+beyond. The builder doc says `FUN_71352810` reads "a user playlist's 8-byte
+entries, 64 at a time from sector `0xb15` on", and `FUN_713528ec` removes a song
+from the user playlists. These are in the shared banks `0x712d2500` and
+`0x71352500`, carried by `music.ap`, `browser.ap`, and `mainmenu.ap`.
+
+So the stock firmware already has:
+1. A playlist builder that indexes `.m3u` files into `M3U.LIB` — verified
+   working (the card's `M3U.LIB` has all ten records).
+2. Five `m3u列表选择N` menu entries for playlist slots.
+3. Reader functions that search M3U.LIB's per-track entries.
+4. `s_m3ulist_option1..5` list-view resources.
+
+**The question the next session must answer**: what does music.ap do when the
+user selects one of the five m3u menu entries? If the stock path already reads
+M3U.LIB and displays playlist tracks, the user's ten playlists may already be
+reachable through the Music menu (not the folder browser, which is a separate
+path and which the user was looking at). The smallest fix may be in the existing
+code rather than in a new module.
+
+This changes the implementation direction: the previous sessions built a
+parallel filesystem+parser pipeline (`m30fs`+`m30playlist`) that may be
+unnecessary if the stock path just needs a small fix.
