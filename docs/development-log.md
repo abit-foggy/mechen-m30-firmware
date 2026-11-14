@@ -659,3 +659,23 @@ state struct with actual directory entries is upstream of the dispatcher, and
 finding it requires tracing back from the dispatcher's state argument.
 
 Recorded in reverse-engineering.md and the handoff (f2e8c54).
+
+## Session 28 — the list-state and row-cache layouts corrected from the harness
+
+The QEMU harness (tools/scroll/harness.c) runs the real browser.ap dirlist
+bank with synthetic data. Its initializations establish the authoritative
+field semantics, correcting the previous report's guesses.
+
+The list-state struct (32 bytes): +0x02 page capacity, +0x08 top visible
+absolute index, +0x0A bottom visible absolute index, +0x0C total item count,
++0x0E active absolute index, +0x10 selected visible line, +0x12 additional
+selection state, +0x14/+0x15 update flags.
+
+The row-cache entry (12 bytes): +0x00 absolute index (u32), +0x04 a marker
+value 16, +0x08 pointer to the display text. The cache is pre-populated by the
+caller before scrolling; the scroll functions only update the list state.
+
+**The row-cache producer is the browser's data provider and is where .m3u
+files are either included or excluded.** Finding it is the next step.
+
+Recorded in reverse-engineering.md and the handoff (bfe8bee).
