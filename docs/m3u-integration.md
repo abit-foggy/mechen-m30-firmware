@@ -224,6 +224,15 @@ Sizes: playlist module 240 B, adapter 816 B, both MIPS16e no warnings.
 
 ## Next actionable steps
 
+1. **Decode music.ap's handler for the m3u menu entries** (ids 49-53) to see
+   whether the stock path already reads M3U.LIB and displays playlist contents.
+2. If the stock path works, identify why the user's playlists don't appear —
+   possibly the five-slot assignment, possibly the 4,000-entry limit.
+3. If the stock path is broken, the smallest fix may be in the existing code
+   rather than in a new module.
+
+## Next actionable steps
+
 1. **Playback** -- table entries 2 and 4 of the engine dispatch table, or the
    browser's selection path.
 2. **List UI** -- display ten playlist titles, open one, list its tracks.
