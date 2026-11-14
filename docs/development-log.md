@@ -679,3 +679,16 @@ caller before scrolling; the scroll functions only update the list state.
 files are either included or excluded.** Finding it is the next step.
 
 Recorded in reverse-engineering.md and the handoff (bfe8bee).
+
+## Session 29 — the selected-file dispatcher decoded
+
+Bank 0x40D14E00 in browser.ap. The function converts the active list index
+into an entry address using index*4 + base - 0xC, checks the entry count
+against the active index, calls a text-provider function to get the entry's
+text, and dispatches to a callback.
+
+The index*4 stride suggests a 4-byte entry array, different from the 12-byte
+row-cache entries the scroll functions read. The relationship between the two
+arrays is undecoded.
+
+Recorded in reverse-engineering.md and the handoff (3eecd17).
