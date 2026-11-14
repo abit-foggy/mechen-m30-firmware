@@ -400,3 +400,20 @@ of file is never exposed: reads clamp to the size op 9 reported.
 Mocked host test: 10 checks including order preservation with duplicates,
 playlist-relative prefixes, malformed lines skipped, empty playlists ending
 cleanly, and missing files reporting OPEN_ERR.
+
+## Session 16 — REA closed out; the audit begins
+
+**REA is recorded as not viable for this project and is closed out.** Its
+documented IDA provider requires an IDA MCP registration, and the provider does
+not accept MIPS targets or raw binaries -- which is what our `.ap` components
+are once extracted. Configuring it would mean installing an MCP plugin into the
+user's IDA and pointing `REA_IDA_MCP_CONFIG` at a running server, purely to have
+it reject our binary format. The ZCode registration and skill remain installed
+harmlessly; the IDA provider stays unconfigured on purpose. If a supported
+MIPS-compatible workflow is independently established, REA can be revisited;
+until then the existing IDA headless plus the M30-specific tools remain the
+analysis path.
+
+**What this session is for**: moving `m30fs` and `m30playlist` from host-tested
+source into the actual firmware build, and auditing them against the builder's
+own code first.
