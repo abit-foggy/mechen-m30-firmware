@@ -161,6 +161,95 @@ int main(int argc, char **argv)
     check(m30fs_init(0, 0, argv[1]) == M30FS_ERR,
           "a null descriptor is refused");
 
+    /* (the label buffer is shared with the read buffer above and needs to be
+     * big enough for these labels) */
+    /* 7. files sized to land exactly on, just past, and just before the
+     *    boundaries the builder warns about: a file shorter than one sector,
+     *    one ending mid-sector, and one crossing several 4 KB boundaries. */
+    {
+        static const struct { u32 size; const char *what; } cases[] = {
+            { 27,    "a file shorter than one sector" },
+            { 511,   "a file one byte short of a sector" },
+            { 512,   "a file exactly one sector" },
+            { 513,   "a file one byte into the second sector" },
+            { 4095,  "a file one byte short of 4 KB" },
+            { 4096,  "a file exactly 4 KB" },
+            { 4097,  "a file one byte past 4 KB" },
+            { 12288, "a file of exactly three 4 KB blocks" },
+            { 12289, "a file crossing four 4 KB boundaries" },
+        };
+        u32 ci;
+        for (ci = 0; ci < sizeof cases / sizeof cases[0]; ci++) {
+            char name[64];
+            FILE *src;
+            u32 total = 0;
+            u32 sz = cases[ci].size;
+            u8 *expect = (u8 *)malloc(sz ? sz : 1);
+            u8 *got = (u8 *)malloc(sz ? sz : 1);
+            u32 k;
+
+            snprintf(name, sizeof name, "%s.%u.tmp", argv[1], sz);
+            src = fopen(name, "wb");
+            for (k = 0; k < sz; k++) {
+                fputc((int)(k & 0xFF), src);      /* a recognisable pattern */
+            }
+            fclose(src);
+            for (k = 0; k < sz; k++) {
+                expect[k] = (u8)(k & 0xFF);
+            }
+
+            if (m30fs_init(&f, 0, name) == M30FS_OK) {
+                int ok = (f.size == sz);
+                while (total < sz) {
+                    u32 want = sizeof buf;
+                    if (want > sz - total) { want = sz - total; }
+                    r = m30fs_read(&f, got + total, want);
+                    if (r <= 0) { break; }
+                    total += (u32)r;
+                }
+                ok = ok && (total == sz);
+                ok = ok && (memcmp(expect, got, sz) == 0);
+                m30fs_close(&f);
+                snprintf(buf, sizeof buf, "%s: size %u read back intact",
+                         cases[ci].what, sz);
+                check(ok, buf);
+            } else {
+                snprintf(buf, sizeof buf, "%s: open failed", cases[ci].what);
+                check(0, buf);
+            }
+            free(expect);
+            free(got);
+            remove(name);
+        }
+    }
+
+    /* 8. a size query must not leave the subsequent read at EOF: open, size,
+     *    then read, with no seek in between. The builder's own op 9 handler
+     *    moves the kernel cursor, which is the trap this guards against. */
+    {
+        char name[64];
+        FILE *src;
+        u32 k;
+        snprintf(name, sizeof name, "%s.cursor.tmp", argv[1]);
+        src = fopen(name, "wb");
+        for (k = 0; k < 1500; k++) { fputc('A', src); }
+        fclose(src);
+
+        if (m30fs_init(&f, 0, name) == M30FS_OK) {
+            /* init already did op 9; read immediately and expect real bytes */
+            r = m30fs_read(&f, buf, sizeof buf);
+            check(r > 0, "after the size query a read still returns bytes");
+            /* and the bytes must be from the start, not from wherever the
+             * kernel cursor was left */
+            check(buf[0] == 'A' && buf[1] == 'A',
+                  "those bytes are from offset 0, not from the cursor");
+            m30fs_close(&f);
+        } else {
+            check(0, "cursor test: open failed");
+        }
+        remove(name);
+    }
+
     printf("%s\n", fails ? "test_m30fs: FAILED" : "test_m30fs: OK");
     return fails ? 1 : 0;
 }
