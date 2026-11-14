@@ -417,3 +417,39 @@ analysis path.
 **What this session is for**: moving `m30fs` and `m30playlist` from host-tested
 source into the actual firmware build, and auditing them against the builder's
 own code first.
+
+## Session 17 — the audit, the name-encoding bug, and the placement
+
+**REA closed out.** Its IDA provider rejects MIPS targets and raw binaries, so
+configuring it would mean installing a plugin in the user's IDA purely to have
+it reject our format. Not done; the existing IDA headless workflow remains.
+
+**The audit caught two real bugs in `m30fs`, both from trusting an inference
+over the builder's own code.** The first was the missing handle: the builder's
+read and seek put the handle in the FOURTH argument, and the adapter was
+passing 0 -- the host mock caught it, and the kernel would have read from no
+file. The second is subtler and the mock cannot catch it: **the kernel's open
+does not take raw ASCII bytes.** The builder's `name()` documents itself as "as
+FUN_40194c00: BOM then UTF-16LE", so the adapter now widens the path to
+UTF-16LE behind a `0xFF 0xFE` BOM. The mock had to become BOM-aware to keep
+testing against real files, and that is host-side convenience rather than a
+claim about the kernel (`18ee83c`).
+
+The audit also added nine file-size cases covering the builder's documented
+hazards -- shorter than a sector, sector edges, exactly and just past 4 KB,
+crossing four boundaries -- each byte-compared, plus an explicit check that a
+read after the size query still comes from offset 0. 30 checks, all passing
+(`2981fa7`).
+
+**The placement is proven.** `tools/fw/placementtest.py` checks that bank
+`0x40014c00` in playlist.ap has 1844 bytes of verified-free tail -- zero in the
+stock image, claimed by no builder chunk, not flagged as a live tail -- and that
+the M3U reader compiles to 1616 bytes, fitting with 228 to spare. The live code
+before the tail is the 204-byte entry prologue, so the tail is genuinely spare
+(`93c5acd`).
+
+**The honest limit: placement is not reachability.** The code compiles, fits,
+and the builder's loader pattern (`loader.c` copies chunks to `0xbfc3c000`) is
+the proven delivery mechanism, but nothing calls the reader yet. Deciding the
+entry point -- the M3U.LIB scan or the `s_m3ulist_*` UI handlers -- is the next
+step, and it needs more decoding before a hook can be placed.
