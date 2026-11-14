@@ -567,3 +567,22 @@ than the extension mask.
 The implementation approach needs to change. Instead of patching masks, we
 need to understand how the M3U scanner actually finds .m3u files, and how the
 browser actually filters files.
+
+## Session 23 — the walker mask is a runtime RAM variable
+
+The walker setup at 0xBFC167D9 stores the extension mask at 0x9FC16AE8
+(uncached 0xBFC16AE8). That address is past browser.ap's resident end and past
+the data segment -- it is scratch RAM. The stock image has it as zero.
+
+The mask value comes from the library-building driver at runtime: 0x7E190EA0
+for MUSIC.LIB, 0x00080400 for M3U.LIB. The walker reads it from RAM when
+filtering files during directory enumeration.
+
+The naive bit-to-slot mapping (bit N = extension slot N) produces DSF and MP1
+for the M3U.LIB mask, not M3U. The builder doc explicitly says the bit order
+is not decoded. The filtering semantics require investigating the walker's
+actual extension-comparison code -- specifically, how it reads the mask from
+RAM and decides whether to admit a file.
+
+The M3U.LIB mask demonstrably works (ten .m3u files were indexed), so the
+mechanism does accept .m3u files under the M3U.LIB mask. The question is how.
