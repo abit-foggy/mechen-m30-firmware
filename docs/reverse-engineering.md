@@ -1391,3 +1391,73 @@ segment, its meaning depends on how the walker's filtering code interprets it.
 `UNVERIFIED`: how the walker's filtering code maps the mask bits to extensions;
 whether the mask is compared against an extension index, a category byte, or
 something else entirely.
+
+## VERIFIED: the walker and mask are in playlist.ap's resident, not browser.ap's
+
+The three references to `0xBFC16AE8` (the extension mask) are at file offsets
+`+0x17cc`, `+0x1804`, and `+0x1874` in **playlist.ap**. These map to playlist.ap's
+second resident segment (file `0x1400`, load `0xBFC16400`, size `0x7BC`), at
+guest addresses `0xBFC167CC`, `0xBFC16804`, and `0xBFC16874`.
+
+**browser.ap's resident is shorter** (size `0x634`, ending at `0xBFC16A34`), so
+`0xBFC16AE8` is past browser.ap's code. The walker and its mask are
+**playlist.ap-specific code**.
+
+### The walker setup (`0xBFC167D8`, resident +0x3D8)
+
+```text
+0xbfc167d8  save 0x18, $ra,$s1
+0x7bfc167dc  frame+8 = $a0              ; the MASK (0x7E190EA0 or 0x00080400)
+0x7bfc167e0  frame+0xC = $a1            ; a byte flag
+0x7bfc167e2  *(u32*)0xBFC16AE8 = $a0    ; STORE THE MASK to scratch RAM
+0x7bfc167e8  if ($a1 == 1) call 0xBFC16784  ; reset to root
+0x7bfc167fc  return 1
+```
+
+Pool: `0xBFC167D0 = 0x9FC15410` (fs context), `0xBFC167D4 = 0xBFC1640D`
+(module 0x11 fs syscall stub).
+
+### The walker next (`0xBFC16808`, resident +0x408)
+
+```text
+0xbfc16808  save 0x30, $ra,$s0-$s1
+0x7bfc1680c  frame+0x18 = $a0            ; a callback
+0x7bfc1680e  mode = *(u16*)0xBFC16AE2
+0x7bfc16812  if (mode == 0) → return -0x82
+0x7bfc1681c  else → return -0x80
+0x7bfc16822  ... then loads:
+               [0xBFC1686C] = 0xBFC16AE4  (an entry counter)
+               [0xBFC16870] = 0xBFC16AE0  (a state pointer)
+               [0xBFC16874] = 0xBFC16AE8  (THE MASK)
+             and calls the fs through 0xBFC1640D (module 0x11)
+```
+
+### The walker entry wrapper (`0xBFC1687C`, resident +0x47C)
+
+```text
+0xbfc1687c  save 0x28, $ra,$s1
+0x7bfc16886  jal 0xBFC16808              ; the walker next, above
+```
+
+### Scratch RAM layout
+
+| address | use |
+|---|---|
+| `0xBFC16AE0` | state pointer |
+| `0xBFC16AE2` | mode (u16) |
+| `0xBFC16AE4` | entry counter |
+| `0xBFC16AE8` | **the extension mask** |
+
+These are in playlist.ap's resident past browser.ap's shorter code — scratch
+RAM that only exists when playlist.ap (or another app with a >= 0x7BC resident)
+is loaded.
+
+**The mask is stored by the setup and the walker continuation loads it, but
+the disassembly was cut off before the actual comparison.** The mask is passed
+to the fs operations (module 0x11), suggesting the **filesystem driver** does
+the extension classification, not the walker code itself.
+
+`VERIFIED`: the walker setup, the mask store, the walker continuation, and the
+scratch RAM layout. `UNVERIFIED`: the actual extension-comparison logic inside
+the fs driver; whether the fs driver or the walker makes the admission
+decision.
