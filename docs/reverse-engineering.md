@@ -1650,3 +1650,54 @@ included or excluded.
 row-cache layout, and the call convention. `UNVERIFIED`: who builds the row
 cache in the real browser; what the `+4` marker means in production; how the
 name pointer at `+8` relates to the displayed text.
+
+## VERIFIED: the selected-file callback — the browser's row-to-action dispatcher
+
+Bank `0x40D14E00` (browser.ap file `0x12500`, size `0x600`). The function at
+bank+`0x1F4`-region is the **selection dispatcher** that converts the active
+list index into a filesystem action.
+
+```text
+0x40d15016  $v0 = index * 4 + base - 0xC   ; compute the entry address
+0x40d15020  *(u32*)frame = entry_address   ; STORE the selected entry address
+
+0x40d15022  $v0 = frame+0x2C               ; a pointer to the list state
+0x40d15024  $v1 = [dword_40D15254]         ; a function pointer
+0x40d15026  $a0 = *(u16*)(state+0x0E)      ; the ACTIVE ABSOLUTE INDEX
+0x40d15028  $v0 = *(u16*)(entry+0x02)      ; the ENTRY'S OWN COUNT
+0x40d1502a  sltu $v0, $a0                  ; compare count with active index
+0x40d1502c  btnez → skip                   ; if count < active, skip
+
+0x40d1502e  $v1 = [dword_40D15254]         ; the same function pointer
+0x40d15032  $a0 = active_index - 1
+0x40d1503c  jal [dword_40D15270]           ; call the TEXT PROVIDER
+
+0x40d15044  if (result == 0) → done
+0x40d1504e  jalrc $v0                      ; call the CALLBACK with the text
+0x40d15052  $v1 = *(u16*)frame+4
+0x40d15054  if ($v1 == 0x8014) → done       ; 0x8014 = a status/message code
+```
+
+The pool at bank+`0x234..0x268`:
+
+| pool word | value | role |
+|---|---|---|
+| `0x40D15234` | (bank-resident) | the entry-array base |
+| `0x40D15254` | (a function pointer) | the entry-text/lookup function |
+| `0x40D15258` | (a function pointer) | a message/status sender |
+| `0x40D15264` | (a function pointer) | an entry-field reader |
+| `0x40D15268` | (a function pointer) | another field reader |
+| `0x40D15270` | (a function pointer) | **the text provider** |
+
+**This function converts the selected index into an entry address, looks up
+the entry's text, and calls a callback.** The callback receives the entry
+text and does the actual action (open directory or play file).
+
+`VERIFIED`: the index-to-entry conversion (`index*4 + base - 0xC`), the
+entry-count guard, and the callback dispatch. `UNVERIFIED`: what the callback
+does; what function is stored at each pool address; whether the entry at
+`index*4 + base - 0xC` is a 12-byte row-cache entry or a different structure.
+
+The `index*4` stride suggests the entry array uses **4-byte entries**, not
+12-byte row-cache entries. This is a different array from the row cache the
+scroll functions read.
