@@ -586,3 +586,23 @@ RAM and decides whether to admit a file.
 
 The M3U.LIB mask demonstrably works (ten .m3u files were indexed), so the
 mechanism does accept .m3u files under the M3U.LIB mask. The question is how.
+
+## Session 24 — the walker is playlist.ap-specific code
+
+The three references to the extension mask address 0xBFC16AE8 are in
+playlist.ap's resident (file 0x1400, size 0x7bc), NOT browser.ap's (size 0x634,
+ending at 0xbfc16a34). The walker and its mask are playlist.ap-specific.
+
+The walker setup at 0xbfc167d8 stores the mask argument to *(0xBFC16AE8).
+The walker next at 0xbfc16808 reads a mode from 0xBFC16AE2 and calls fs
+operations through module 0x11 (stub 0xbfc1640c). The walker entry wrapper at
+0xbfc1687c is a thin save+jal wrapper.
+
+Scratch RAM layout: 0xBFC16AE0 (state pointer), 0xBFC16AE2 (mode u16),
+0xBFC16AE4 (entry counter), 0xBFC16AE8 (extension mask). These are in
+playlist.ap's resident past browser.ap's shorter code.
+
+The mask is stored by the setup, loaded by the walker, and passed to the fs
+operations. The actual extension comparison may be inside the fs driver's
+syscall handler, not in the walker code itself. This shifts the investigation
+to the filesystem driver (fat_32n.drv / exfatn.drv).
