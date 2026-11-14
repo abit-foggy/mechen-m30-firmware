@@ -102,6 +102,29 @@ full banks md5 differently, so matching entry prologues are convention, not
 sharing. **Never conclude two banks are the same from matching prefixes** —
 compare the whole bank.
 
+## Two separate directory-walker systems
+
+`VERIFIED`. The firmware has **two independent directory-enumeration walkers**
+in different parts of the shared resident:
+
+| system | location | mechanism | used by |
+|---|---|---|---|
+| **category-byte walker** | `0xBFC168A0` (within browser.ap's resident) | 16-byte nodes; `node+5` is a category byte (0xFF = any); `node+12` is a callback | **browser.ap** (7 refs to the node-array base) |
+| **extension-mask walker** | past `0xBFC16A34` (only in music.ap and playlist.ap residents) | a runtime RAM mask at `0x9FC16AE8` passed to module 0x11 | **playlist.ap** (library scanner), **music.ap** |
+
+**browser.ap's resident is too short** (0x634, ending at `0xBFC16A34`) to
+contain the extension-mask walker's code. browser.ap **cannot** execute the
+extension-mask walker. It uses the category-byte walker exclusively.
+
+This means making `.m3u` files visible in the browser requires working with
+the **category-byte** system, not the extension-mask system. The category
+bytes are assigned when the node array is built (at runtime), and the array
+base is at `0x9FC15584`.
+
+browser.ap has 7 references to the node-array base: one in the resident (file
+`+0x114c`) and six in overlay bank `0x48454600` (which also exists in
+music.ap).
+
 ## Subsystems
 
 - **Music library**: `MUSIC.LIB` (songs) and `M3U.LIB` (playlists), selected by
