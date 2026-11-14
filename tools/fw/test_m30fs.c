@@ -39,10 +39,24 @@ static long mock_fs(u32 a0, u32 a1, u32 a2, u32 a3, u32 op)
         mock_chdirs++;
         return 0;
     case M30FS_OP_OPEN: {
-        const char *name = (const char *)a1;
-        if (!name || a2 != 0 || a3 != 0) { return 0; }
+        /* the adapter sends BOM + UTF-16LE; decode back to a host path. This
+         * is host-side convenience, NOT a claim about the kernel. */
+        const unsigned char *nm = (const unsigned char *)a1;
+        char name[600];
+        u32 qi = 0;
+        if (!nm || nm[0] != 0xFF || nm[1] != 0xFE || a2 != 0 || a3 != 0) {
+            return 0;
+        }
+        nm += 2;
+        while (nm[qi * 2] || nm[qi * 2 + 1]) {
+            name[qi] = (char)nm[qi * 2];
+            qi++;
+            if (qi >= sizeof name - 1) { return 0; }
+        }
+        name[qi] = 0;
         if (backing) { fclose(backing); }
         backing = fopen(name, "rb");
+        fprintf(stderr, "[mock] decoded %d chars: %s -> %p\n", qi, name, (void*)backing);
         mock_opens++;
         return backing ? 0x1234u : 0;   /* a nonzero handle, 0 on failure */
     }
@@ -188,7 +202,7 @@ int main(int argc, char **argv)
             u8 *got = (u8 *)malloc(sz ? sz : 1);
             u32 k;
 
-            snprintf(name, sizeof name, "%s.%u.tmp", argv[1], sz);
+            snprintf(name, sizeof name, "%s.%u", argv[1], sz);
             src = fopen(name, "wb");
             for (k = 0; k < sz; k++) {
                 fputc((int)(k & 0xFF), src);      /* a recognisable pattern */

@@ -136,15 +136,26 @@ int m30fs_init(struct m30fs_file *f, u32 ctx, const char *path)
     f->size = 0;
     f->pos = 0;
 
-    for (i = 0; i < sizeof name - 1 && path[i]; i++) {
-        name[i] = path[i];
-    }
-    name[i] = 0;
-    if (path[i] != 0) {
-        return M30FS_ERR_TOOBIG;
-    }
-    if (i == 0 || name[0] == 0) {
-        return M30FS_ERR_BADPATH;
+    /* The kernel's open takes the name as UTF-16LE with a BOM, not raw bytes:
+     * tools/library/index.c's name() documents itself as "as FUN_40194c00:
+     * BOM then UTF-16LE", and it is the same builder this ABI came from. The
+     * host mock is byte-transparent and cannot catch a wrong encoding. */
+    {
+        u8 *out = (u8 *)name;
+        u32 w = 0;
+        *out++ = 0xFF; *out++ = 0xFE;
+        for (i = 0; path[i]; i++) {
+            if (i >= M30FS_PATH_MAX / 2 - 1) {
+                return M30FS_ERR_TOOBIG;
+            }
+            *out++ = (u8)path[i];      /* ASCII widens to UTF-16LE */
+            *out++ = 0;
+            w++;
+        }
+        if (w == 0) {
+            return M30FS_ERR_BADPATH;
+        }
+        *out++ = 0; *out = 0;
     }
 
     /* the stock creator changes to the root drive before opening; do the same */
