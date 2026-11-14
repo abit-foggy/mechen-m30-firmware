@@ -505,3 +505,21 @@ per-track entries that the reader searches. The stock firmware has a complete
 M3U playlist browsing path. Whether it works for the user's ten playlists
 depends on whether the Music app actually opens M3U.LIB and reads those
 records, which is the next thing to verify on hardware.
+
+## Session 20 — the filesystem chain verified end to end
+
+The seek+read helper at `0x7815B4D8` (bank `0x7815B200`) is now decoded. It
+seeks with `FS_OP(ctx, offset, 0, handle, 0xB)` and reads with
+`FS_OP(ctx, buf, 512, handle, 0xD)` through the filesystem context at
+`*(0x9FC15980)` and the file handle at `*(0x9FC1597C)`.
+
+Both are music.ap data-segment globals: the context has 83 references, the
+handle has 14. The syscall stub at `0xBFC16BB4` in music.ap's resident is
+module `0x11` (filesystem). The filename table at `0x7805b498` has MUSIC.LIB at
+index 0 and M3U.LIB at index 1, selected by index.
+
+**This confirms FUN_71352810 reads through music.ap's own filesystem globals.**
+The chain from the Music app through the shared reader bank to the filesystem
+is now verified at every edge. What remains is to determine which library type
+the handle is opened for -- which is a hardware check (navigate to an m3u
+playlist in the Music menu) or a trace of the open call.
