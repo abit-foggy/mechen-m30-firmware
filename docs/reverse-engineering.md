@@ -1715,18 +1715,54 @@ From the IDA disassembly of bank `0x40D14E00` (browser.ap file `0x12500`):
 0x40d15020  sw    $v0, 0($s1)           ; store on the frame
 ```
 
-The `-0xC` adjustment means the array entries start **12 bytes before** the
-table base pointer. The base likely points past a 12-byte header, or the base
-is the address of a field that is 12 bytes past the array start.
+**CORRECTION: the previous conclusion was overstated.** The code calculates
+an address and stores that address through `$s1`. It does NOT establish:
+- the contents at the computed address,
+- whether the index is zero-based,
+- that the entries are filesystem locations,
+- that the table is an extension array.
 
-The index is **zero-based**: index 0 gives `base - 12`, index 1 gives
-`base - 8`, etc.
+What IS established from the instructions:
 
-The resulting address is stored on the frame and used later (the callback
-receives it or its contents). The 4-byte stride means each entry is a
-**32-bit word** — either a pointer or a packed identifier.
+```text
+0x40d15016  addu  $v0, $v1              ; combine two components
+0x40d15018  sll   $v1, $v0, 2           ; multiply by 4
+0x40d1501a  lw    $v0, dword_40D15234   ; load a base pointer
+0x40d1501c  addiu $v0, -0xC             ; subtract 12
+0x40d1501e  addu  $v0, $v1, $v0         ; computed_address = base - 12 + (combined)*4
+0x40d15020  sw    $v0, 0($s1)           ; store the ADDRESS on the frame
+```
 
-`VERIFIED`: the computation sequence, the stride (4), the adjustment (-12),
-and the zero-based indexing. `UNVERIFIED`: what the 32-bit values in the
-entries contain; whether they are pointers, offsets, or identifiers; where the
-table base comes from.
+The `-0xC` adjustment and the zero-based assumption are UNVERIFIED.
+
+### The full function context (from IDA)
+
+After the address is stored, the code:
+
+```text
+0x40d15022  lw   $v0, 0x2C($s1)          ; the list-state pointer
+0x40d15024  lw   $v1, dword_40D15254     ; a function pointer
+0x40d15026  lhu  $a0, 0xE($v0)           ; the ACTIVE ABSOLUTE INDEX (1-based)
+0x40d15028  lhu  $v0, 2($v1)             ; read from the fn's target at +2
+0x40d1502a  sltu $v0, $a0                ; compare count with active index
+0x40d1502c  btnez → skip
+
+0x40d1502e  lw   $v1, dword_40D15254     ; the same function pointer
+0x40d15030  lw   $v0, 0x2C($s1)          ; the state pointer
+0x40d15032  lhu  $v0, 0xE($v0)           ; the ACTIVE INDEX again
+0x40d15034  addiu $v0, -1                ; active_index - 1
+0x40d15036  zeh  $v0
+0x40d15038  move $a0, $v1                ; the function pointer
+0x40d1503a  move $a1, $v0                ; active - 1
+0x40d1503c  jal  0x40D15270              ; CALL THE TEXT PROVIDER
+```
+
+**The text provider receives `active_index - 1`.** Since the harness
+initializes the active index to 1 (not 0), the list-state index is **1-based**,
+and the text provider converts to 0-based by subtracting 1. This is a
+correction to the previous zero-based assumption.
+
+`VERIFIED`: the instruction sequence, the 1-based indexing (from the `-1`
+adjustment before the text-provider call), and the text-provider dispatch.
+`UNVERIFIED`: the first dereference of the computed address; the contents at
+that address; the meaning of the `-0xC` adjustment.
