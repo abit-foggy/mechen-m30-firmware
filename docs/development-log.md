@@ -606,3 +606,27 @@ The mask is stored by the setup, loaded by the walker, and passed to the fs
 operations. The actual extension comparison may be inside the fs driver's
 syscall handler, not in the walker code itself. This shifts the investigation
 to the filesystem driver (fat_32n.drv / exfatn.drv).
+
+## Session 25 — the two-walker architecture
+
+**browser.ap and the library scanner use different walkers.** This is a
+structural fact proven by resident sizes, not an inference. browser.ap's
+resident is 0x634 bytes (ending at 0xBFC16A34). The extension-mask walker's
+code and mask scratch (0xBFC16AE8) are past that point. browser.ap cannot
+execute the extension-mask walker.
+
+The browser uses the category-byte walker at 0xBFC168A0, which IS within its
+resident. That walker filters on node+5 (category byte, 0xFF = any). The node
+array is built at runtime; its base is at 0x9FC15584.
+
+This means every previous session that investigated the extension mask was
+tracking the library scanner's mechanism (playlist.ap), not the browser's. The
+two systems are independent.
+
+Making .m3u files visible in the browser requires working with the
+category-byte system. browser.ap has 7 references to the node-array base
+0x9FC15584: one in the resident and six in overlay bank 0x48454600. The next
+session should decode the node-array builder in that bank to determine how
+category bytes are assigned and how to make .m3u files get a visible category.
+
+Recorded in architecture.md and the handoff (`0b4ade4`).
