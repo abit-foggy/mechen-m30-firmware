@@ -714,3 +714,41 @@ active_index - 1 to a text-provider function. Since the harness initializes
 the active index to 1, the list-state index is 1-BASED.
 
 Recorded in reverse-engineering.md and the handoff (ad5c335).
+
+## Session 32 — the virtual-folder engine (Phase A) and the row-provider contract
+
+New direction: the custom M3U/M3U8 virtual-folder system, reusing the stock
+folder-list UI and playback engine instead of repairing the original M3U
+library. Phase A is implemented and host-tested:
+
+- `tools/fw/m30virtual.c/h` — bounded (256 rows x 96 bytes, no allocation)
+  virtual folder over m30playlist: order and duplicates preserved,
+  drive-rooted (`:`) entries stored unprefixed, trailing debris trimmed,
+  over-long entries dropped, cap overflow reported, case-insensitive
+  `.m3u`/`.m3u8` recognition. 752 text bytes in MIPS16e.
+- `m3u` parser now skips a leading UTF-8 BOM (a Windows-written playlist kept
+  its first path poisoned before).
+- `m30fs` fails closed on a null stub and always zeroes the file state first.
+- 74 in-process checks in `test_m30virtual.c/.py` over the player's exact
+  source with a mocked kernel syscall (bcf10cb).
+
+Phase B reverse engineering landed the row-provider contract
+(reverse-engineering.md, "the row-provider contract"):
+
+- The `-0xC` mystery is SOLVED: the base `dword_40D15234 = 0x9FC155A4` is the
+  12-byte row cache, the multiplier is 12 (not 4), so the computation is
+  `cache + (slot-1)*12` with slot from state+0x10 — the 1-based-to-0-based
+  conversion, parallel to the `-1` on the active index.
+- The text provider `0x40D15270` is a shim over the shared record reader
+  `0x48594510` (bank `0x48594400`, byte-identical in every .ap module), which
+  positions a kernel service (`[0x9FC157A4]`, resident `0xBFC16585`) at
+  `base + index*0x14` (op 0xF) and reads a 20-byte record (op 0x11).
+- The selected-entry dispatcher CALLS the record's word at +8 as a function
+  with a0=0 and checks a 0x8014 status — rows carry handler pointers.
+- browser.ap's recognized-extension table (0x40D1529C) has no M3U/M3U8,
+  confirming the two-layer invisibility.
+
+Adapter implication for Phase B/D: a virtual folder must either populate the
+row cache (0x9FC155A4, 12-byte {id, name_len, name_ptr} entries) and answer
+the record fetch, or hook the dispatch at the wrapper. Still unresolved:
+whether this record stream is the file list or a menu registry.

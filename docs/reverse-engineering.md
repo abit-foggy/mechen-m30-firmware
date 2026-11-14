@@ -1735,34 +1735,154 @@ What IS established from the instructions:
 
 The `-0xC` adjustment and the zero-based assumption are UNVERIFIED.
 
+### RESOLVED: the base is the row cache, and `-0xC` is the 1-based offset
+
+The pool words around the sequence settle both open questions:
+
+```text
+dword_40D15234 = 0x9FC155A4   ; the 12-byte row cache base (see below)
+dword_40D15238 = 0x487144A9   ; scroll-next  (MIPS16e ISA bit set)
+dword_40D1523C = 0x487146CD   ; scroll-prev
+dword_40D15254 = 0x9FC155F8   ; the row-record descriptor (RAM, not code)
+```
+
+Two facts fix the meaning of the computation:
+
+1. `dword_40D15234` (`0x9FC155A4`) is also the **first argument the dispatcher
+   passes to the scroll functions** (`0x40D14F58`: `a0 = 0x9FC155A4`,
+   `a1 = [s1+0x2C]`, `jalrc 0x487144A9`) — the same `(cache, list)` pair the
+   QEMU scroll harness uses. So the base is the 12-byte row cache.
+2. The multiplier is not 4 but **12**: `lhu $v1, 0x10($v0)` (state+0x10, a
+   1-based cache slot), then `v0 = v1*3; v1 = v0 << 2` → `v1 = slot*12`. The
+   stride is the 12-byte row-cache entry the harness pinned.
+
+Therefore:
+
+```text
+computed = 0x9FC155A4 - 0xC + slot*12
+         = 0x9FC155A4 + (slot - 1)*12
+```
+
+**The `-0xC` is the 1-based → 0-based conversion for a 12-byte stride** —
+parallel to the `-1` applied to the active index before the record fetch. The
+slot is bounds-checked to 1..7 (`beqz → error`; `sltiu $v0, 8`), so at most 7
+cache slots are addressed here. What the dispatcher does with the stored
+address remains `UNVERIFIED`; the verified selection path (below) fetches its
+row through the record descriptor instead.
+
 ### The full function context (from IDA)
 
 After the address is stored, the code:
 
 ```text
 0x40d15022  lw   $v0, 0x2C($s1)          ; the list-state pointer
-0x40d15024  lw   $v1, dword_40D15254     ; a function pointer
+0x40d15024  lw   $v1, dword_40D15254     ; 0x9FC155F8: the record descriptor
 0x40d15026  lhu  $a0, 0xE($v0)           ; the ACTIVE ABSOLUTE INDEX (1-based)
-0x40d15028  lhu  $v0, 2($v1)             ; read from the fn's target at +2
-0x40d1502a  sltu $v0, $a0                ; compare count with active index
+0x40d15028  lhu  $v0, 2($v1)             ; descriptor+2: the row COUNT (u16)
+0x40d1502a  sltu $v0, $a0                ; count < active  → out of range
 0x40d1502c  btnez → skip
 
-0x40d1502e  lw   $v1, dword_40D15254     ; the same function pointer
+0x40d1502e  lw   $v1, dword_40D15254     ; the descriptor again
 0x40d15030  lw   $v0, 0x2C($s1)          ; the state pointer
 0x40d15032  lhu  $v0, 0xE($v0)           ; the ACTIVE INDEX again
 0x40d15034  addiu $v0, -1                ; active_index - 1
 0x40d15036  zeh  $v0
-0x40d15038  move $a0, $v1                ; the function pointer
-0x40d1503a  move $a1, $v0                ; active - 1
+0x40d15038  move $a0, $v1                ; the DESCRIPTOR (not a fn pointer)
+0x40d1503a  move $a1, $v0                ; active - 1  (0-based row)
 0x40d1503c  jal  0x40D15270              ; CALL THE TEXT PROVIDER
 ```
 
-**The text provider receives `active_index - 1`.** Since the harness
-initializes the active index to 1 (not 0), the list-state index is **1-based**,
-and the text provider converts to 0-based by subtracting 1. This is a
-correction to the previous zero-based assumption.
+**The text provider receives `(descriptor, active_index - 1)`.** Since the
+harness initializes the active index to 1 (not 0), the list-state index is
+**1-based**, and the call converts to a 0-based row. This corrects the
+previous zero-based assumption and the earlier reading of `dword_40D15254` as
+a function pointer: it is a RAM descriptor at `0x9FC155F8`, count at +2, base
+at +4.
 
 `VERIFIED`: the instruction sequence, the 1-based indexing (from the `-1`
-adjustment before the text-provider call), and the text-provider dispatch.
-`UNVERIFIED`: the first dereference of the computed address; the contents at
-that address; the meaning of the `-0xC` adjustment.
+adjustment before the record fetch), the identity of both pool words, and the
+meaning of `-0xC`.
+`UNVERIFIED`: what the dispatcher does with the stored cache-slot address;
+whether state+0x10 is the top row or the cursor-within-page.
+
+## VERIFIED: the row-provider contract (wrapper → record reader → handler)
+
+Chased to its end this session, entirely by anchored disassembly:
+
+**1. The wrapper `0x40D15270` (browser.ap bank `0x40D14E00`, file `0x12500`
++0x470).** A 0x28-byte-frame shim:
+
+```text
+0x40d15270  save 0x38, $ra,$s1
+0x40d15272  addiu $s1, $sp, 0x10
+0x40d15274  sw   $a0, 0x28($s1)          ; arg0: the descriptor
+0x40d15276  move $v0, $a1
+0x40d15278  sh   $v0, 0x2C($s1)          ; arg1 narrowed to u16: the row index
+0x40d1527e  move $a0, $v0               ; a0 = descriptor
+0x40d15280  move $a1, $v1               ; a1 = (u16) index
+0x40d15282  move $a2, $s1               ; a2 = &frame: 0x14-byte record buffer
+0x40d15284  lw   $v0, dword_40D15298    ; 0x48594511 → routine at 0x48594510
+0x40d15286  jalrc $v0
+0x40d15288  lw   $v0, 8($s1)            ; record word at +8
+0x40d15290  move $v0, $t8               ; return it
+```
+
+**2. The record reader `0x48594510` — in bank `0x48594400`, which is
+byte-identical in every `.ap` module** (browser, config, mainmenu, music,
+playlist, setting; headers compared). A shared UI-library bank, so a
+shared-code placement mechanism exists by construction. Given
+`(descriptor, index, out)`:
+
+```text
+0x4859451c  lw   $v0, dword_4859456C    ; 0x9FC157A4: kernel-service handle slot
+0x4859451e  lw   $a0, 0($v0)            ; the service context
+0x48594522  lhu  $a1, 4($v0)            ; v0 = descriptor: base offset (u16) at +4
+0x48594524  lhu  $v1, 0x14($s1)         ; the index
+; v0 = index*20 (sll 2; addu; sll 2 — exactly ×5 then ×4)
+0x4859452e  addu $v0, $a1, $v0          ; offset = base + index*0x14
+0x48594530  li   $a1, 0
+0x48594532  move $a2, $v0               ; arg2 = the offset
+0x48594534  li   $a3, 0xF               ; service op 0xF
+0x48594536  lw   $v0, dword_48594570    ; 0xBFC16585: the kernel service
+0x48594538  jalrc $v0                   ; service(ctx, 0, offset, 0xF)
+; bounds/result check, then:
+0x48594548  li   $a2, 0x14              ; 20 bytes
+0x4859454a  li   $a3, 0x11              ; service op 0x11
+0x4859454e  jalrc $v0                   ; service(ctx, out, 0x14, 0x11) — the record
+; op 0x11 returning -1 sets the error flag returned at [s1+0]
+```
+
+So the record table is addressed **through a kernel service** (resident
+`0xBFC16585`, itself a state machine over a command byte — not a syscall
+stub), with op `0xF` positioning at `base + index*0x14` and op `0x11` reading
+the 20-byte record. `0x9FC157A4` holds the service context. Record layout,
+20 bytes; word at **+8 is returned to the wrapper**.
+
+**3. The dispatcher calls the returned word as a function.** Back in the
+browser's input bank:
+
+```text
+0x40d1503c  jal  0x40D15270             ; (descriptor, active-1)
+0x40d15042  sw   $v0, 8($s1)            ; the record's +8 word
+0x40d15046  beqz $v0 → exit             ; NULL row: no handler
+0x40d1504e  jalrc $v0                   ; CALL it with a0 = 0
+0x40d15052  sh   $v0, 4($s1)            ; its u16 result
+0x40d15054  li   $v0, 0x8014; xor; sltiu ; result == 0x8014 test
+```
+
+The row-provider contract, in one line: **for row N, the browser fetches a
+20-byte record via descriptor `0x9FC155F8` (count at +2, base offset at +4)
+through the kernel service at `[0x9FC157A4]`, and record+8 is a handler
+function pointer that the selected-entry dispatcher calls with `a0=0`,
+checking a 0x8014 status.**
+
+Adjacent decode in the same bank: the **recognized-extension table** at
+`0x40D1529C`, 4-byte-packed UTF-16LE entries (`***`, `MP3`, `WMA`, `WAV`,
+`AAC`, `FLA(FLAC)`, `APE`, `AVI`, `TXT`, `JPG`, `JPEG`, `DSF`, `DFF`, `LRC`,
+`ASF`, `OGG`, `WMV`, `AMV`, `AAX`, `AA `, `MP1`, `MP2`, `M4A`, `POS`, `ACT`…).
+**No M3U/M3U8 entry** — consistent with the fs-driver mask finding: playlist
+files are invisible to the stock browser at both layers.
+
+`UNVERIFIED`: whether this record stream is the browser's file list or a
+menu/handler registry (the `a0=0` handler call and 0x8014 status suggest a
+menu-item registry); the remaining record fields; the service's op table.

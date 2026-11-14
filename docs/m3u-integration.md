@@ -278766,3 +278766,67 @@ is unmounted.
 Working tree clean apart from the user's pre-existing theme work (`README.md`,
 `build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
 pushed. No `MECHEN_M30.HEX` built.
+
+## Latest commits
+
+`bcf10cb` the virtual-folder engine (Phase A) — 74 host checks, 752 MIPS16e
+text bytes.
+
+## The virtual-folder engine (Phase A complete) [host]
+
+New direction per the current brief: a custom M3U/M3U8 virtual-folder system
+inside the stock file browser, reusing the stock folder-list UI and playback
+engine; the original M3U library/M3U.LIB work is abandoned (kept as
+background only).
+
+`tools/fw/m30virtual.c/h` — one open folder at a time, one static object:
+
+- bounded table: `M30VIRTUAL_MAX_ENTRIES` (256) rows x
+  `M30VIRTUAL_REF_MAX` (96, = `M30FS_PATH_MAX`) bytes; no allocation, no
+  growth; overflow sets `virtual_truncated()`.
+- rows are the resolved references in playlist order; duplicates preserved;
+  display name = the reference's file-name part (byte-wise, UTF-8 safe).
+- entries longer than the fs adapter can open are dropped, not truncated.
+- drive-rooted (`:`-prefixed) entries are stored without the playlist's
+  directory prefix.
+- `virtual_is_playlist()` does the case-insensitive full-suffix
+  `.m3u`/`.m3u8` match Phase C/D need (suffix rule: `.m3u` with no stem
+  matches too; documented).
+- the playlist file is closed immediately after enumeration — rows are
+  resident, the kernel handle is scarce.
+
+Parser hardening in the same commit: `m3u` skips a leading UTF-8 BOM (before
+the fix, `EF BB BF` prefixed the first line and both hid `#EXTM3U` from the
+comment test and poisoned the first path); `m30fs_init` refuses a null stub
+and zeroes the file state before any failure, so a failed open is always safe
+to close.
+
+Tests: `test_m30virtual.py` — 74 in-process checks over the player's exact
+source (engine + m30playlist + m30fs with the mocked kernel syscall): BOM,
+CRLF, duplicates, debris trimming, absolute vs relative, missing tracks
+(entry held, open fails cleanly), UTF-8 byte-exactness, over-long drop,
+200-row order, 300-row truncation at the cap, close/reopen cycles, the
+extension matrix, and the null-stub failure. Plus a MIPS16e cross-compile of
+the engine: **752 text bytes**.
+
+## The row-provider contract (Phase B evidence) [dis]
+
+Recorded in full in reverse-engineering.md ("the row-provider contract").
+Short form for the adapter work:
+
+- `dword_40D15234 = 0x9FC155A4` is the 12-byte row cache; the dispatcher's
+  computed address is `cache + (slot-1)*12` with slot from state+0x10 — the
+  `-0xC` is the 1-based conversion, now RESOLVED.
+- Row text/action comes from a 20-byte record fetched through a kernel
+  service: descriptor `0x9FC155F8` (count at +2, base offset at +4), context
+  at `[0x9FC157A4]`, service `0xBFC16585`, op 0xF = position, op 0x11 =
+  read 0x14 bytes.
+- The dispatcher calls record+8 as a function with `a0=0` and checks a
+  0x8014 status.
+- The shared bank `0x48594400` is byte-identical across all .ap modules —
+  a shared-code mechanism exists by construction.
+- browser.ap's extension table (0x40D1529C) has no M3U/M3U8.
+
+Phase B next step: decide the hook point — populate the row cache + answer
+the record fetch, or hook the wrapper `0x40D15270` — then prove it with the
+QEMU scroll harness extended to a static virtual list.
