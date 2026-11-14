@@ -89,4 +89,10 @@ u32 m30fs_tell(const struct m30fs_file *f);
 /* Close the file. Safe to call twice; the second call does nothing. */
 void m30fs_close(struct m30fs_file *f);
 
+#ifdef M30FS_TEST_HOOK
+/* host tests only: install a mock in place of the kernel stub. Compiled out of
+ * the target build, so it adds nothing to the player's firmware. */
+void m30fs_test_install(long (*fn)(u32, u32, u32, u32, u32));
+#endif
+
 #endif /* M30FS_H */

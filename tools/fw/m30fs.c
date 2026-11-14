@@ -52,6 +52,16 @@ void m30fs_set_stub(u32 stub, u32 ctx)
     spos = 0;
 }
 
+#ifdef M30FS_TEST_HOOK
+/* host tests install their mock through this, since there is no kernel to
+ * point at; it is compiled out of the target build */
+void m30fs_test_install(long (*fn)(u32, u32, u32, u32, u32))
+{
+    fs = fn;
+    fs_ctx = 0;
+}
+#endif
+
 static long fscall(u32 a0, u32 a1, u32 a2, u32 a3, u32 op)
 {
     return fs(a0, a1, a2, a3, op);
