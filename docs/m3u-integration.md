@@ -278852,3 +278852,38 @@ Adapter recipe for Phase D, all verified: fill 12-byte rows
 window at `state+8..+0xA`; refill when `UPDATE == 2`; answer selection from
 `state+0x0E - 1`; wrap the virtual folder's lifetime in a state
 snapshot/restore.
+
+## Phase C — the SDK mapping and the corrected adapter [dis][host][qemu]
+
+The ATJ2127 SDK (Suber/PD196_ATJ2127, local reference copy) IS the M30's
+architecture. Full mapping in reverse-engineering.md; the working facts:
+
+- **Row record = `file_brow_t`** `{ext[4] (not NUL-terminated), name_len,
+  reserve[3], name_buf → per-row writable 52-byte buffer}`. The adapter and
+  the PoC were corrected to fill `ext[4]` and the real length
+  (`8df33cc`); the PoC now mixes FLAC/MP3/M3U rows and verifies the ext
+  field classifies correctly after every stock state update, including the
+  playlist row (`js minecraft.m3u` → class M3U, its audio neighbours → not).
+- **`virtual_ext_class()`** implements the classifier contract the stock
+  `dir_file_type` uses — exactly 4 bytes compared, case-folded, space-padded
+  — with 12 host checks.
+- **`g_dir_browser` at `0x9FC15598`, `g_file_list` at `0x9FC155A4`** (+12),
+  and the M30 directory-entry branch matches the SDK's
+  `fsel_browser_enter_dir(SON_DIR…)` sequence verbatim (PARENT_DIR + "no
+  file" dialog on empty; `enter_dir=1`, `update_mode=HEAD`, `draw_mode` 3).
+- **Masks decoded** (`case_type.h`): bit[30] = extension-table entry 0,
+  descending; the M30's `0x7e190ea0` decodes cleanly; **M3U/M3U8 have no
+  slot in any table**, so no runtime mask can admit them. The smallest
+  visibility change is therefore table-local: add M3U+M3U8 slots to
+  browser.ap's own 31-slot extension table (63 free zero slots follow it at
+  file `+0xc188`) and set the corresponding bits in the browser's runtime
+  mask — not a global driver change.
+- **fsel bank structure**: `0x780db200`-family = dispatch trampolines over
+  the selector byte `0x9FC15734` into per-mode function tables
+  (`0x780DB5C8/0x780DB5D4`); the fsel init that writes the runtime mask is
+  the next decode target for the visibility patch.
+- The selection hook (Phase D) is the dispatcher's file branch:
+  `cur_file = g_file_list + (active-1)*12` (computed and stored at frame+0)
+  bounds-checked against the file count at `0x9FC155F8+2`, then the wrapper
+  `0x40D15270(descriptor, list_no-1)` — classify `cur_file->ext` there with
+  `virtual_ext_class` and divert M3U/M3U8 to the virtual-folder path.
