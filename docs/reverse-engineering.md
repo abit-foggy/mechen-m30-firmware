@@ -1194,3 +1194,61 @@ was one way in; a plain pathname is another, and it is already verified.
 - The stub addresses are **per-module**: `0xBFC1640D` in playlist.ap's resident
   mapping, `0xBFC11CCC` in mengine.ap's. The *function ids* are the kernel's and
   are shared; the stub addresses are not.
+
+## VERIFIED: FUN_71352810 — the per-track search in M3U.LIB
+
+Bank `0x71352500` (music.ap file `0x19e00`, 1740 bytes). This is the function
+the builder doc calls "the same search over a user playlist's 8-byte entries."
+
+```text
+0x71352810  save 0x30, $ra,$s1
+0x71352814  frame+0x20 = $a0            ; the search key (a file location)
+0x71352816  frame+0x24 = $a1            ; an output pointer
+0x71352818  *frame+0xC = 1
+0x7135281c  $a0 = 0
+0x71352820  jalrc [dword_713528DC]      ; = 0x7815B4D8, a bank function
+0x71352824  lhu $v0, [dword_713528E0]   ; = 0x7815B680, a bank-resident count
+0x71352826  frame+6 = count
+
+0x71352828  *(u16*)$a1 = -1              ; initialise the output to "not found"
+0x71352830  if (count == 0) → return 0
+
+0x7135283a  frame+0 = 0                 ; current index
+0x7135283e  frame+2 = 0                 ; matches found
+0x71352842  frame+4 = 0xB15             ; THE STARTING SECTOR
+0x71352848  loop: if (frame+0 >= count) → done
+0x71352850  if (frame+2 >= 0xFA0) → done  ; 4000 = the per-playlist limit
+0x71352858  $v1 = frame+2 * 8            ; 8-BYTE ENTRIES
+0x7135285c  $v0 = $v1 & 0x1FF            ; offset within a 512-byte sector
+0x71352862  if (offset == 0) → seek to frame+4; frame+4 += 1
+0x71352876  $v0 = *(frame+8)             ; the 64-entry buffer
+0x71352878  lbu $v0, 0($v0)             ; compare the first byte with the key
+```
+
+Its pool at guest `0x713528DC`:
+
+| pool word | value | what |
+|---|---|---|
+| `0x713528DC` | `0x7815B4D9` | fn `0x7815B4D8` — a bank function (probably seek or read) |
+| `0x713528E0` | `0x7815B680` | a bank-resident u16 count |
+| `0x713528E4` | `0x7815B5E0` | a bank-resident 64-entry buffer |
+
+The bank addresses `0x7815Bxxx` are in the `0x78` group, which is a different
+overlay window from the `0x71` shared banks and the `0x7b` engine banks. The
+count and buffer are bank-resident, meaning they are populated by a prior call
+and lost when the bank is swapped.
+
+**What this establishes:**
+
+1. **M3U.LIB contains per-track 8-byte entries** beyond the playlist records.
+2. **The reader searches them starting at sector `0xB15`.** That sector is
+   `0x162A00` bytes into the preallocated `M3U.LIB`.
+3. **64 entries per sector** (512 / 8).
+4. **The limit is 4000 entries** (`sltiu $v0, 0xFA0`).
+5. The search key is an 8-byte file location — the same shape as `+0xa9` in
+   MUSIC.LIB records and `+0xa9` in M3U.LIB playlist records.
+
+`UNVERIFIED`: which file handle the search reads through (it uses a bank
+function to do the reads); whether the ten playlist records' `+0xa9` location
+selects the starting sector per playlist or whether `0xB15` is a global start;
+what the eight bytes in each entry contain.
