@@ -1584,3 +1584,69 @@ events to the scroll functions. The list-population function is upstream.
 
 `VERIFIED`: the scroll-function pointers are in bank `0x40D14E00`'s pool, not in
 the folder-list bank. The input dispatcher is in a third bank.
+
+## VERIFIED (corrected): the list-state and row-cache layouts from the QEMU harness
+
+`tools/scroll/harness.c` runs the real browser.ap dirlist bank under QEMU with
+synthetic data. Its initializations and runtime assertions establish the
+authoritative field semantics, correcting the previous report's guesses.
+
+### The list-state struct (32 bytes, `$a1` to the scroll functions)
+
+| offset | size | role | corrected from |
+|---|---|---|---|
+| `+0x02` | 1 | **page capacity** (visible lines) | was "total entry count" |
+| `+0x08` | 2 | **top visible absolute index** | was "max visible rows" |
+| `+0x0A` | 2 | **bottom visible absolute index** | was "page limit" |
+| `+0x0C` | 2 | **total item count** | was "page/limit" |
+| `+0x0E` | 2 | **active absolute index** | was "current scroll position" |
+| `+0x10` | 2 | **selected visible line** | was "selected row index" |
+| `+0x12` | 2 | additional selection state | was "selected row absolute" |
+| `+0x14` | 1 | update flag (cleared after redraw) | was unnamed |
+| `+0x15` | 1 | update flag (cleared after redraw) | was "redraw flag" |
+
+The harness's invariant check at each step confirms:
+`1 <= top <= active <= bottom <= total` and `line == active - top + 1`.
+
+### The 12-byte row-cache entry (`$a0` to the scroll functions)
+
+The harness initializes `PAGE * 12` bytes (8 entries × 12 bytes):
+
+```c
+*(u32 *)(cache + i * 12) = i;                    // +0x00: index
+cache[i * 12 + 4] = 16;                          // +0x04: size/type marker
+*(u32 *)(cache + i * 12 + 8) = (u32)names[i];    // +0x08: name pointer
+```
+
+| offset | size | role |
+|---|---|---|
+| `+0x00` | 4 | **absolute index** (into the full item list) |
+| `+0x04` | 1 | **16** (a fixed marker; possibly the name length or a type code) |
+| `+0x08` | 4 | **pointer to the display text** |
+
+### The call convention
+
+```c
+p_next((u32)cache, list);   /* scroll forward */
+p_prev((u32)cache, list);   /* scroll backward */
+```
+
+Function pointers: `0x487144A9` (next, ISA bit set → `0x487144A8`) and
+`0x487146CD` (prev → `0x487146CC`). The row cache is `$a0`, the list state is
+`$a1`.
+
+### What the scroll functions do NOT do
+
+They **do not populate the row cache**. They only update the list-state fields
+(top, bottom, active, line) in response to scroll events. The row cache is
+pre-populated by the caller before scrolling.
+
+**The row-cache producer is the function that enumerates directory entries,
+classifies them, and builds the 12-byte entries with filenames.** That producer
+is the browser's data provider, and it is where `.m3u` files are either
+included or excluded.
+
+`VERIFIED`: the list-state field semantics (corrected from the harness), the
+row-cache layout, and the call convention. `UNVERIFIED`: who builds the row
+cache in the real browser; what the `+4` marker means in production; how the
+name pointer at `+8` relates to the displayed text.
