@@ -701,3 +701,16 @@ stride is 4 bytes, and the -12 adjustment means the entries start 12 bytes
 before the table base pointer. Each entry is a 32-bit word.
 
 Recorded in reverse-engineering.md and the handoff.
+
+## Session 31 — corrected the entry-table conclusions, discovered 1-based indexing
+
+The previous conclusion that the computed address targets a zero-indexed
+4-byte filesystem-entry array was overstated. The code calculates an address
+and stores it; it does not establish the contents at the computed address.
+
+The full function context from IDA shows that after the address computation,
+the code reads the ACTIVE ABSOLUTE INDEX from state+0x0E and passes
+active_index - 1 to a text-provider function. Since the harness initializes
+the active index to 1, the list-state index is 1-BASED.
+
+Recorded in reverse-engineering.md and the handoff (ad5c335).
