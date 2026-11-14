@@ -19,9 +19,22 @@ static long mock_fs(u32 a0, u32 a1, u32 a2, u32 a3, u32 op)
     case M30FS_OP_CHDIR:
         return 0;
     case M30FS_OP_OPEN: {
-        const char *name = (const char *)(uintptr_t)a1;
+        /* the adapter sends BOM + UTF-16LE; decode back to a host path */
+        const unsigned char *nm = (const unsigned char *)(uintptr_t)a1;
+        char name[600];
+        u32 qi = 0;
+        if (!nm || nm[0] != 0xFF || nm[1] != 0xFE || a2 != 0 || a3 != 0) {
+            return 0;
+        }
+        nm += 2;
+        while (nm[qi * 2] || nm[qi * 2 + 1]) {
+            name[qi] = (char)nm[qi * 2];
+            qi++;
+            if (qi >= sizeof name - 1) { return 0; }
+        }
+        name[qi] = 0;
         if (backing) { fclose(backing); }
-        backing = name ? fopen(name, "rb") : NULL;
+        backing = fopen(name, "rb");
         return backing ? 0x1234u : 0;
     }
     case M30FS_OP_SIZE: {
