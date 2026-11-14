@@ -1461,3 +1461,53 @@ the extension classification, not the walker code itself.
 scratch RAM layout. `UNVERIFIED`: the actual extension-comparison logic inside
 the fs driver; whether the fs driver or the walker makes the admission
 decision.
+
+## VERIFIED: the 16-byte node structure and accessor functions
+
+Bank `0x48454600` (browser.ap file `0x14900`, size `0x600`, 1504 bytes live)
+contains the node-array accessor functions. The node **stride is confirmed as
+16 bytes** by two independent `sll ..., 4` instructions.
+
+### The accessor functions
+
+| bank offset | role | evidence |
+|---|---|---|
+| `+0x40` | **search**: iterates nodes by advancing `s0 += 0x10`, checks `node+0` against 2 | first pool ref at +0x6c |
+| `+0xa0` | **accessor**: computes `node_base + index*16` via `sll $v1, $a0, 4` | second pool ref at +0xbc |
+| `+0xe0` | **setter**: computes `node_base + index*16`, writes `1` to `node+0` | third pool ref at +0xf0 |
+
+The pool words:
+
+| address | value | what |
+|---|---|---|
+| `0x484546EC` | `0x9FC15574` | the node count |
+| `0x484546F0` | `0x9FC15584` | the node-array base |
+
+### The node layout, from all witnesses
+
+| offset | size | field | evidence |
+|---|---|---|---|
+| `+0x00` | 1 | status/flag (written to 1 by the setter; compared against 2 by the search) | `sb $a3(1), 0($a0)` at +0xe8; `cmpi $v0, 2` at +0x50 |
+| `+0x01` | 1 | type (compared against 1 by the walker at 0xbfc168b6) | `lbu $a1, 1($s0); cmpi $a1, 1` |
+| `+0x05` | 1 | **category byte** (compared against the active filter, 0xFF = any) | `lbu $v1, 5($s0); xor $a1, $v1; cmpi $v1, 0xFF` at 0xbfc168c6-ce |
+| `+0x08` | 4 | data pointer (advanced by the walker) | `lw $v1, 8($s0); addu $v0, $v1, $a2` at 0xbfc168de |
+| `+0x0C` | 4 | **callback pointer** (called with `jalrc`) | `lw $v0, 0xC($s0); jalrc $v0` at 0xbfc16912-14 |
+
+**Unknown fields**: +2, +3, +4, +6, +7, +9, +10, +11, +13, +14, +15.
+
+### What this establishes
+
+1. **The node stride is 16 bytes** — confirmed by two `sll ..., 4` instructions
+   in independent functions.
+2. **The node array is dynamically built** — the base pointer at `0x9FC15584`
+   is a RAM variable, not a constant.
+3. **The setter function writes 1 to node+0**, activating a node.
+4. **The search function scans for a node with status 2**, suggesting nodes go
+   through a state machine (1 = active, 2 = processed/done).
+5. **The category byte at +5 is compared against an active filter**, not
+   against a static list of extensions.
+
+`UNVERIFIED`: which function writes to `node+5`; what the category values mean
+beyond 0xFF = any; whether the category byte corresponds to a file extension,
+a UI state, or a navigation classification; whether the callback at node+12 is
+a per-node file handler.
