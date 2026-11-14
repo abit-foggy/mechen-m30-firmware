@@ -1511,3 +1511,52 @@ The pool words:
 beyond 0xFF = any; whether the category byte corresponds to a file extension,
 a UI state, or a navigation classification; whether the callback at node+12 is
 a per-node file handler.
+
+## VERIFIED: the folder-list scroll function and its state struct
+
+Bank `0x48714400` (browser.ap file `0x18900`, size `0x800`, 1663 bytes live).
+The scroll-next function at `0x487144A8` (bank `+0xA8`) operates on a **state
+struct** passed as `$a1` (the second argument).
+
+```text
+0x487144a8  save 0x18, $ra,$s1
+0x487144ac  frame+8 = $a0
+0x487144ae  frame+0xC = $a1 = state struct
+0x487144b0  *(u16*)0x9FC15636 = 1        ; set a REDRAW FLAG
+
+0x487144b6  $v1 = state[+0x0E]           ; the current scroll position
+0x487144bc  $v0 = *(u16*)0x9FC15636      ; the flag global
+0x487144be  $v1 = position + flag        ; compute the next position
+0x487144c0  $v0 = state[+0x0A]           ; the MAXIMUM VISIBLE ROWS
+0x487144c4  if (next_pos < max_rows) → scroll normally
+0x487144c8  ... (page-forward logic)
+
+0x487144f4  ... (at the boundary):
+0x487144f8  $a0 = state[+0x0E]
+0x487144fa  $v0 = state[+0x0C]
+0x487144fc  $v0 = $a0 ^ $v0              ; compare current position with...
+0x487144d4  state[+0x0E] = state[+0x0E] + flag
+0x487144dc  state[+0x12] = state[+0x10]
+0x487144ea  state[+0x10] = state[+0x10] + flag
+0x487144f0  *(u16*)0x9FC15636 = 1        ; set the redraw flag
+```
+
+The **state struct** fields, from the scroll function's accesses:
+
+| offset | size | role | evidence |
+|---|---|---|---|
+| `+0x02` | 1 | total entry count (byte or small u16) | `lbu 2($v0)` |
+| `+0x0A` | 2 | **maximum visible rows** | compared against position |
+| `+0x0C` | 2 | current page or limit | compared with position |
+| `+0x0E` | 2 | **current scroll position** | incremented and compared |
+| `+0x10` | 2 | **selected row index** | incremented alongside position |
+| `+0x12` | 2 | selected row absolute | copied from +0x10 |
+| `+0x15` | 1 | redraw flag (set via the global) | `sb 1, 0x15($v1)` |
+
+The RAM global `0x9FC15636` is a redraw/scroll flag (browser.ap data segment
+`+0x236`).
+
+`VERIFIED`: the scroll function's field accesses, the redraw flag, and the
+state struct layout. `UNVERIFIED`: which function populates the state struct
+with actual directory entries; where the row-text provider reads filenames
+from; and what the function at `$a0` (frame+8) does.
