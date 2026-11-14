@@ -630,3 +630,18 @@ session should decode the node-array builder in that bank to determine how
 category bytes are assigned and how to make .m3u files get a visible category.
 
 Recorded in architecture.md and the handoff (`0b4ade4`).
+
+## Session 26 — the node layout is verified
+
+Bank 0x48454600 in browser.ap contains the node-array accessor functions. The
+node stride is confirmed as 16 bytes by two independent sll instructions.
+
+Three accessor functions are decoded: a search (advance s0 += 0x10, check
+node+0 against 2), an accessor (node_base + index*16), and a setter (write 1
+to node+0). The node layout is established from all witnesses: +0 is a
+status/flag, +1 is a type (checked against 1 by the walker), +5 is the
+category byte (compared against the active filter with 0xFF = any), +8 is a
+data pointer, and +12 is a callback pointer called with jalrc.
+
+The category byte at +5 is compared against an active filter, not against a
+static extension list. Which function writes to +5 is still unknown.
