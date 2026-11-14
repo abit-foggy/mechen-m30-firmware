@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Build patched MECHEN M30 firmware from the official 2025-06-26 MECHEN_M30.HEX.
 #
-# usage: ./build.sh [--test] [--no-playall] [--no-keys] [--no-library] STOCK_MECHEN_M30.HEX [OUTDIR]
+# usage: ./build.sh [--test] [--no-playall] [--no-keys] [--no-library] [--theme DIR]
+#                   STOCK_MECHEN_M30.HEX [OUTDIR]
 #   --test        also run the QEMU harnesses (shuffle, shuffle all, scroll, keys, library)
+#   --theme DIR   repaint UI bitmaps from the theme in DIR (tools/theme/sty.py), a folder of
+#                 <sty>_<bitmap-index>.ppm images
 #   --no-playall  leave out shuffle-all mode
 #   --no-keys     leave out the screen-off media keys
 #   --no-library  leave out the whole-card library (keep the stock 4,000-song limit)
@@ -11,18 +14,20 @@
 #                    passes' globals on the card for comparison with the harness
 #   --library-iotest diagnostic: scan 100 files, then test the kernel's reads and writes on a
 #                    4 MB MUSIC.TMP and the library (tools/library/iotest.c)
-#   --library-replay diagnostic: scan 100 files, then replay the passes' file operations from
+#   --library-replay diagnostic: scan 100 files, then replay the file operations from
 #                    IOTEST.OPS in the card root with self-describing data (tools/library/replay.c)
 # Writes OUTDIR/MECHEN_M30.HEX (default OUTDIR: build). Tools, overridable from the environment:
 #   CROSS=mips64-linux-gnu-   ATJBOOTTOOL=atjboottool   QEMU=qemu-mipsel-static   PYTHON=python3
 set -euo pipefail
 
-TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
+TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
 while [ $# -gt 0 ]; do
   case $1 in
     --test) TEST=1; shift ;;
+    --theme) THEME=$2; shift 2 ;;
     --no-playall) PLAYALL=0; shift ;;
     --no-keys) KEYS=0; shift ;;
+    --no-m3uhook) M3UHOOK=0; shift ;;
     --no-library) LIBRARY=0; shift ;;
     --library-bench) LIB_SRC=bench.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
     --library-probe) LIB_DEFS=-DPROBE; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
@@ -116,6 +121,20 @@ done
 "$PY" -I "$T/scroll/patch_scroll.py" "$F/browser.ap" 0x18900 accel_browser.bin browser.ap "$NX" "$PV"
 "$PY" -I "$T/scroll/patch_scroll.py" "$F/music.ap" 0x2d200 accel_music.bin music.ap "$NX" "$PV"
 echo "   blob $(stat -c %s accel_browser.bin) bytes at 0x48714a80, accel_next 0x$NX, accel_prev 0x$PV"
+
+if [ $M3UHOOK = 1 ]; then
+  echo "== browser.ap: M3U/M3U8 selection hook"
+  "${CROSS}gcc" $CFLAGS -x assembler-with-cpp -c -o m3uhook.raw.o "$T/m3u/m3uhook.S"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3uhook.raw.o m3uhook.o
+  "${CROSS}ld" -EL -m elf32ltsmip -Ttext=0x40d1534c -e m30u_hook -o m3uhook.elf m3uhook.o
+  "${CROSS}objcopy" -O binary -j .text m3uhook.elf m3uhook.bin
+  HOOK_ADDR=$(sym m3uhook.elf m30u_hook); SLOT_ADDR=$(sym m3uhook.elf m30u_branch_slot)
+  case "$HOOK_ADDR" in 40d15[0-6]*) ;; *) echo "   m3u hook entry outside the bank tail: $HOOK_ADDR"; exit 1;; esac
+  case "$SLOT_ADDR" in 40d15[0-6]*) ;; *) echo "   m3u hook slot outside the bank tail: $SLOT_ADDR"; exit 1;; esac
+  # applies on top of the scroll-patched browser.ap; patch_m3uhook.py asserts
+  # the stock wrapper bytes and the zero bank tail before writing
+  "$PY" -I "$T/m3u/patch_m3uhook.py" browser.ap browser.ap m3uhook.bin 0x$HOOK_ADDR 0x$SLOT_ADDR
+fi
 PATCHED="mengine.ap browser.ap music.ap"
 
 if [ $KEYS = 1 ]; then
@@ -147,6 +166,19 @@ if [ $LIBRARY = 1 ]; then
   done
   case " $PATCHED " in *" playlist.ap "*) ;; *) PATCHED="$PATCHED playlist.ap" ;; esac
   case " $PATCHED " in *" mainmenu.ap "*) ;; *) PATCHED="$PATCHED mainmenu.ap" ;; esac
+fi
+
+if [ -n "$THEME" ]; then
+  [ -d "$THEME" ] || { echo "$THEME is not a theme directory"; exit 1; }
+  echo "== theme: $THEME"
+  # repaint only the bitmaps the theme names; a repaint keeps the file exactly the size
+  # of its FWIMAGE.FW slot, so repack_fw.py stays happy and nothing else in the image moves
+  for f in "$F"/*.sty; do
+    b=$(basename "$f")
+    "$PY" -I "$T/theme/sty.py" apply "$f" "$(realpath "$THEME")" "$b" | sed 's/^/   /'
+    [ -f "$b" ] || continue        # the theme has no bitmap for this file
+    cmp -s "$f" "$b" || case " $PATCHED " in *" $b "*) ;; *) PATCHED="$PATCHED $b" ;; esac
+  done
 fi
 
 echo "== repack"

@@ -278887,3 +278887,59 @@ architecture. Full mapping in reverse-engineering.md; the working facts:
   bounds-checked against the file count at `0x9FC155F8+2`, then the wrapper
   `0x40D15270(descriptor, list_no-1)` — classify `cur_file->ext` there with
   `virtual_ext_class` and divert M3U/M3U8 to the virtual-folder path.
+
+## Phase C — the first hardware-testable candidate [host][qemu][built]
+
+`tools/m3u/m3uhook.S` + `patch_m3uhook.py` + `m3uhooktest.py`, integrated as
+`build.sh`'s `--no-m3uhook` step:
+
+- **Patch site**: browser.ap bank `0x40D14E00`, the selected-file wrapper's
+  first instruction at `0x40D15270` (the wrapper has exactly one caller —
+  the dispatcher's file branch at `0x40D1503C` — verified by scanning the
+  whole file for the jal pattern and pool words). The 2-byte entry becomes a
+  branch to a hook in the bank's verified-zero tail (stock bytes +0x546..
+  +0x600 are zero; the blob is ~80 bytes at +0x54C).
+- **Behavior**: M3U/M3U8 rows (4-byte ext field, case-folded, space/NUL
+  padding, "M3U8" for the 8.3-style long suffix) → the stock
+  `gui_dialog_msg(0x8000, 3, 0x8018)` — the same call the stock empty-dir
+  path makes — then return 0, so the dispatcher exits through its clean
+  redraw path. Ordinary rows replay the displaced `save 0x38,$ra,$s1` and
+  enter the wrapper, byte-for-byte stock behavior.
+- **Safety**: nothing reaches the audio decoder; ordinary directory/audio
+  selection is untouched (verified per-case under QEMU with the actual
+  patched bytes); music.ap's same-address overlay copy of the bank is a
+  different module and is untouched.
+- **QEMU validation** (`m3uhooktest.py`): the patched entry branch + the
+  build's actual blob run under `qemu-mipsel-static` with recording
+  stand-ins for the dialog (0x48AD4A2C) and the wrapper continuation
+  (0x40D15272): M3U/M3U8 in both paddings and both cases take the custom
+  path; FLAC/MP3/M3UX pass through with `$a0`/`$a1` intact and the dialog
+  silent; the dialog receives exactly the stock's argument triple.
+- **Built**: `build/MECHEN_M30.HEX` sha256 `873d5acf…` (11662336 bytes) —
+  all prior patches preserved (shuffle, scroll, keys, whole-card library);
+  build.sh's own verify: AFI 19/0, FW 201/0, FwuTail ok, exactly the seven
+  expected files changed from stock. Independent byte diff of the patched
+  browser.ap: the M3U hook contributes exactly 2 + 80 bytes in bank
+  `0x40D14E00`, everything else belongs to the earlier patches.
+
+**Row capacity (production)**: `g_file_list` at `0x9FC155A4` spans **seven**
+12-byte records (84 bytes) with `g_dir_browser` immediately after at
+`0x9FC155F8` — the 6-line page plus one record. The Phase B PoC's synthetic
+12-row cache is a harness artifact, not production; the virtual-folder
+adapter in Phase D must allocate its own row storage and must never write
+past `0x9FC155F8` unless the region's ownership is re-verified.
+
+**Hardware test checklist** (the candidate is built but NOT flashed):
+1. Back up: keep the stock `MECHEN_M30.HEX` (sha `6c7e27c8…`) and the v5
+   release (`af999b7b…`) on the PC.
+2. Install per README (**Setting > Auto upgrade** with exactly one
+   `MECHEN_M30.HEX` on the card root).
+3. Boot normally; open the File Browser; scroll a large folder (regression
+   for the scroll/keys patches).
+4. Navigate to the folder with the playlists. **If `.m3u`/`.m3u8` files are
+   listed** → the SDK's all-files enumeration applies (no visibility patch
+   needed) — select one: the hook should show the stock dialog (the custom
+   path fired) while a FLAC/MP3 row plays as before.
+5. If the playlist files are **not listed** → the enumeration filter is
+   real; the next step is the table+mask visibility patch (Phase C
+   remainder), and the selection hook is already in place for it.
