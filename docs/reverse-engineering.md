@@ -1366,3 +1366,28 @@ them through the fallback path rather than through the extension mask.
 
 `DISPROVEN`: the M3U.LIB mask selects .m3u files by extension.
 `UNVERIFIED`: how the M3U.LIB builder actually finds .m3u files on the card.
+
+## VERIFIED: the walker setup stores the mask in RAM past the resident
+
+The walker setup at `0xbfc167d9` (browser.ap resident `+0x3d9`) stores the
+extension mask at `0xbfc16ae8`. That address is:
+- past browser.ap's resident end (`0xbfc16a34`, size `0x634`)
+- inside the uncached RAM alias (`0xbfc00000` = `0x9fc00000` uncached)
+- `0x9fc16ae8` = `0x9fc15400 + 0x16e8`, past the data segment (size `0x6f4`)
+
+So the mask is a **RAM variable** in a scratch area beyond the declared data
+segment, not a flash constant. The stock image has it as zero. It must be
+populated at runtime by the walker setup code.
+
+The walker setup code (from the raw bytes at resident `+0x3d9`) stores the mask
+and resets the walker state before returning to the root directory. The mask
+value is passed in from the caller (the library-building driver), which passes
+`0x7e190ea0` for MUSIC.LIB and `0x00080400` for M3U.LIB.
+
+**The mask is a runtime value, not a compiled constant.** The walker reads it
+from RAM when filtering files. Since it is in scratch RAM past the data
+segment, its meaning depends on how the walker's filtering code interprets it.
+
+`UNVERIFIED`: how the walker's filtering code maps the mask bits to extensions;
+whether the mask is compared against an extension index, a category byte, or
+something else entirely.
