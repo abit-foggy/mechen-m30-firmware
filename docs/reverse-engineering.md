@@ -1341,3 +1341,28 @@ order inside the driver isn't decoded" per the builder doc).
 `UNVERIFIED`: the exact mask location, the bit-to-index mapping, and whether
 adding a slot shifts the existing indices (which would corrupt every other
 extension's classification).
+
+## DISPROVEN: the M3U.LIB mask does not select M3U files by extension
+
+The M3U.LIB mask `0x00080400` has bits 10 and 19 set. Mapping those bits
+against the driver's extension table (31 slots, bit N = slot N):
+
+- bit 10 → slot 10 = DSF
+- bit 19 → slot 19 = MP1
+
+Neither is M3U. Alternative bit orderings (reversed, 1-indexed) produce MP2 and
+DFF. **No standard bit ordering maps the M3U.LIB mask to M3U or M3U8.**
+
+This disproves the assumption that the M3U.LIB builder selects .m3u files by
+setting extension-mask bits. The mask selects DSF and MP1 — audio formats —
+which suggests the M3U.LIB scanner does not use the extension mask to find
+.m3u files at all.
+
+The builder doc says the M3U scanner (`FUN_40154ecc`) "has the same shape" as
+the MUSIC.LIB scanner and uses a per-type limit table. The MUSIC.LIB scanner
+classifies files via `FUN_40094f2c` into tag-reader types (0-8), where type 8
+is "anything else." If .m3u files fall into type 8, the M3U scanner may find
+them through the fallback path rather than through the extension mask.
+
+`DISPROVEN`: the M3U.LIB mask selects .m3u files by extension.
+`UNVERIFIED`: how the M3U.LIB builder actually finds .m3u files on the card.
