@@ -184,47 +184,50 @@ mengine.ap bank 0x7a052d00 — dispatch table at 0x7A0530A8, EIGHT entries
 
 ## Exact remaining blockers
 
-1. **The fs read argument order** -- whether op `0xD` is `(buf, n, handle)` or
-   `(handle, buf, n)`. The adapter mirrors the stock write helper's `(buf, len)`,
-   an inference from symmetry, not a decoded read site. This is now the **only**
-   filesystem unknown, and it is one argument swap.
+1. **The fs read argument order on hardware.** The adapter now uses the
+   builder's own shapes -- `(ctx, buffer, len, h, 0xD)` with the handle as the
+   FOURTH argument -- so the remaining question is whether the real kernel
+   agrees with the builder's code. That is a read-only hardware check.
 2. **A writer of the mode byte `0x9FC15F20`**: not found.
 3. The playback entry point: table entries 2, 4, 5, 6 and 7 untraced.
 4. Display: no list widget traced.
 
-## The deadlock is broken
+## The pipeline now exists on the firmware side
 
-**The stock filesystem's open operation takes a plain pathname**, verified from
-the stock library-file creator `playlist.ap:0x40194c78` -- a function our own
-expanded-library build exercises, so it is known-working by construction. The
-opaque `get_location` contract is off the critical path.
+**`tools/fw/m30playlist.c`** wires the stock filesystem adapter to the existing
+parser. 240 bytes of MIPS16e:
 
-That made the first firmware-side module writable against a verified interface:
+```text
+playlist path
+  -> m30pl_open    m30fs_set_stub(per-module stub) -> m30fs_init
+                   (chdir ':', op 5 open, op 9 size)
+  -> m30pl_next    4 KB bounded buffered read -> the existing m3u parser
+  -> track entries, prefixed with the playlist's own directory
+  -> m30pl_close   close on every path, idempotent
+```
 
-- `tools/fw/m30fs.h` / `m30fs.c` -- open by path, read, size, close.
-  400 bytes of MIPS16e, no warnings. Ops 8/5/9/0xD/7; the function id is the
-  last argument at `0x10($sp)`, which the adapter gets from a five-argument
-  function pointer so the compiler emits the o32 sequence. Verified at object
-  level: the compiled `fscall` stores the id at `16(sp)` and `jalrc`s the stub,
-  matching the stock sequence instruction for instruction.
-- `tools/fw/test_m30fs.c` / `.py` -- 19 mocked host checks: the open/size/read/
-  close sequence in order, cursor behaviour, double-close safety, path bounding,
-  a missing file leaving no handle, reopen-after-close.
+Two subtleties the host test caught:
+- `m3u_init` validates its io, so the read callback must be installed *before*
+  it runs.
+- Entries come back prefixed with the playlist's directory -- which is what makes
+  `../Music/...` resolve, since the card's playlists reference their tracks
+  relative to themselves.
 
-Two real bugs the mock caught: the adapter reset its stub from a compile-time
-default on every init, so the stub could not be overridden at run time (stub
-addresses are per-module, so a run-time setter is the right interface anyway);
-and a mock whose size handler moved the file cursor made the first read silently
-return nothing.
+And `m30fs.c` gained the builder's own call shapes, correcting a real bug: the
+handle is the FOURTH argument to seek and read. The previous version passed 0,
+which the host mock caught -- the kernel would have read from no file at all. The
+read path also now implements the builder's 4 KB constraint: transfers split at
+the next 4096-byte boundary, seek only when the handle is not already there, one
+sector buffer on top so callers see an ordinary byte stream.
+
+Sizes: playlist module 240 B, adapter 816 B, both MIPS16e no warnings.
 
 ## Next actionable steps
 
-1. **Build a vertical slice**: `m30fs` + the existing `m3u` reader, opening one
-   playlist by path and listing its entries. Everything for this exists; only
-   the wiring and a bank placement are missing.
-2. **Settle the read argument order** -- one argument swap, checkable on hardware
-   with a read-only diagnostic.
-3. Then playback, then the list UI.
+1. **Playback** -- table entries 2 and 4 of the engine dispatch table, or the
+   browser's selection path.
+2. **List UI** -- display ten playlist titles, open one, list its tracks.
+3. **Firmware build** -- bank placement for `m30playlist` + `m30fs` + `m3u`.
 
 ## Tests
 
@@ -235,9 +238,10 @@ is unmounted.
 
 ## Latest commits
 
-`fe2fc5d` adapter recorded in firmware-api · `4af5377` unused-context fix ·
-`2648b14` mocked adapter test · `3d1e6a0` the filesystem adapter ·
-`30141fb` the verified path-based open ABI · `e723917` two-caller comparison.
+`e7197f7` pipeline logged · `c69be2f` m30playlist wired to m30fs and the parser ·
+`ab4271f` handle restored to seek/read + 4 KB bounded buffer ·
+`30141fb` the verified path-based open ABI · `2648b14` mocked adapter test ·
+`e723917` two-caller comparison.
 
 Working tree clean apart from the user's pre-existing theme work (`README.md`,
 `build.sh`, `docs/theme-switching.md`, `tools/theme/`), untouched. Nothing
