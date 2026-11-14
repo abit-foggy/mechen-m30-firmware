@@ -85,6 +85,20 @@ const char *virtual_path(void);
  * five-byte suffix is tested first, so ".m3u8" never matches as ".m3u". */
 int virtual_is_playlist(const char *name);
 
+/* Classification of a browser row's extension field, for the selection
+ * bridge. The stock browser's record is the 12-byte file_brow_t whose first
+ * four bytes are the extension -- NOT necessarily NUL-terminated (the stock
+ * classifier compares exactly 4 bytes), so this takes the four bytes and a
+ * case-insensitive match is required. */
+typedef enum {
+    VIRTUAL_EXT_OTHER = 0,   /* anything the browser classifies as before */
+    VIRTUAL_EXT_M3U,         /* "M3U "  */
+    VIRTUAL_EXT_M3U8         /* "M3U8"  */
+} virtual_ext_class_t;
+
+/* Classify 4 extension bytes (short names pad with spaces; case folded). */
+virtual_ext_class_t virtual_ext_class(const unsigned char *ext4);
+
 /* Close. The table is dropped, so entry pointers must not be used afterwards.
  * Safe to call when nothing is open. */
 void virtual_close(void);

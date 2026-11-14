@@ -41,10 +41,21 @@ typedef unsigned char u8;
  * exercise the reload path. */
 #define VTOTAL 12
 
-static const char *const vnames[VTOTAL] = {
-    "Track A.flac",  "Track B.flac",  "Track C.flac",  "Track D.flac",
-    "Track E.flac",  "Track F.flac",  "Track G.flac",  "Track H.flac",
-    "Track I.flac",  "Track J.flac",  "Track K.flac",  "Track L.flac",
+/* Rows now carry the stock browser's file_brow_t fields: a display name and
+ * the 4-byte extension field (short names pad with spaces; the field is NOT
+ * NUL-terminated). The list mixes ordinary audio rows with one playlist row,
+ * so the adapter demonstrably distinguishes them the way the selection
+ * bridge must. */
+static const struct vrow {
+    const char *name;
+    const char *ext;      /* up to 4 bytes, space-padded */
+} vrows[VTOTAL] = {
+    {"Track A.flac", "FLAC"},  {"Track B.flac", "FLAC"},
+    {"Track C.flac", "FLAC"},  {"old mix.mp3",  "MP3 "},
+    {"Track E.flac", "FLAC"},  {"Track F.flac", "FLAC"},
+    {"Track G.flac", "FLAC"},  {"Track H.flac", "FLAC"},
+    {"js minecraft.m3u", "M3U"},  {"Track J.flac", "FLAC"},
+    {"Track K.flac", "FLAC"},  {"Track L.flac", "FLAC"},
 };
 
 static volatile u32 now_ms;
@@ -87,9 +98,23 @@ static u8 list[0x20];
 static u8 cache[CROWS * 12];
 /* The bank MOVES string content through the row-cache name pointers during
  * slides (verified: with read-only literals, literal 0's bytes became literal
- * 1's), so the rows must point at writable buffers the adapter re-fills. */
-static char rtext[PAGE][24];
+ * 1's), so the rows must point at writable buffers the adapter re-fills.
+ * Buffer size 52 = the SDK's LIST_ITEM_BUFFER_LEN for browser rows. */
+#define ROWBUF 52
+static char rtext[CROWS][ROWBUF];
 static u8 snap[0x20 + CROWS * 12];
+
+/* the SDK's row classifier semantics: compare exactly 4 bytes, case folded */
+static int ext_is_m3u(const u8 *ext4)
+{
+    u8 e[4];
+    u32 i;
+    for (i = 0; i < 4; i++) {
+        e[i] = ext4[i] | 0x20;             /* A-Z folds; digits and space unaffected */
+        if (e[i] == ' ') { e[i] = 0; }
+    }
+    return e[0] == 'm' && e[1] == '3' && e[2] == 'u' && (e[3] == 0 || e[3] == '8');
+}
 
 #define U16(o) (*(volatile u16 *)(list + (o)))
 #define U8(o)  (*(volatile u8 *)(list + (o)))
@@ -106,7 +131,7 @@ static void (*volatile p_prev)(u32, u8 *);
  * pointer can never be read. */
 static void refill(void)
 {
-    u32 top = U16(8), i;
+    u32 top = U16(8), i, n;
     for (i = 0; i < CROWS; i++) {
         u32 abs = top - 1 + i;
         const char *src;
@@ -117,12 +142,16 @@ static void refill(void)
             *(u32 *)(cache + i * 12 + 8) = 0;
             continue;
         }
-        src = vnames[abs];
+        src = vrows[abs].name;
         d = rtext[i];
         while (*src) { *d++ = *src++; }
         *d = 0;
-        *(u32 *)(cache + i * 12) = abs;      /* 0-based absolute id */
-        cache[i * 12 + 4] = 16;              /* the marker the verified harness uses */
+        /* the stock record: ext[4] (space-padded, not NUL-terminated),
+         * name_len in bytes, writable name buffer */
+        for (n = 0; n < 4; n++) {
+            cache[i * 12 + n] = (u8)vrows[abs].ext[n];
+        }
+        cache[i * 12 + 4] = (u8)(d - rtext[i]);
         *(u32 *)(cache + i * 12 + 8) = (u32)rtext[i];
     }
 }
@@ -200,8 +229,10 @@ void _start(void)
         while (s[n]) n++;
         puts_("ROW "); putu(i); puts_(" "); putsn(s, n); puts_("\n");
     }
-    check(text_eq(*(const char **)(cache + 0 * 12 + 8), vnames[0]),
+    check(text_eq(*(const char **)(cache + 0 * 12 + 8), vrows[0].name),
           "page 0 row 1 is Track A");
+    check(cache[4] == 12 && !ext_is_m3u(cache + 0),
+          "row 0 carries name_len=12 and a FLAC ext field");
 
     /* --- move the selection with the real stock code */
     for (step = 0; step < sizeof(script); step++) {
@@ -226,10 +257,19 @@ void _start(void)
         }
         /* THE CONTRACT: the dispatcher's slot arithmetic must land on the
          * selected virtual entry after every stock state update */
-        if (!text_eq(row_text() ? row_text() : "", vnames[abs])) {
+        if (!text_eq(row_text() ? row_text() : "", vrows[abs].name)) {
             fails++; puts_("CONTRACT step "); putu(step);
             puts_(" got="); puts_(row_text() ? row_text() : "(null)");
-            puts_(" want="); puts_(vnames[abs]); puts_("\n");
+            puts_(" want="); puts_(vrows[abs].name); puts_("\n");
+        }
+        /* the row's ext field must survive the slides and classify right */
+        {
+            u32 want_m3u = (abs == 8);
+            if (ext_is_m3u(cache + (line - 1) * 12) != want_m3u) {
+                fails++; puts_("EXT step "); putu(step); puts_(" abs "); putu(abs);
+                puts_(" m3u="); putu(ext_is_m3u(cache + (line - 1) * 12));
+                puts_(" want "); putu(want_m3u); puts_("\n");
+            }
         }
     }
     puts_("SCROLLED active "); putu(U16(0xe)); puts_(" of "); putu(U16(0xc));
@@ -239,19 +279,43 @@ void _start(void)
     {
         u32 active = U16(0xe);
         const char *sel = row_text();
-        puts_("SELECT "); putu(active); puts_(" "); puts_(sel); puts_("\n");
-        check(text_eq(sel ? sel : "", vnames[active - 1]),
+        puts_("SELECT "); putu(active); puts_(" "); puts_(sel);
+        puts_(" m3u="); putu(ext_is_m3u(cache + (U16(0x10) - 1) * 12)); puts_("\n");
+        check(text_eq(sel ? sel : "", vrows[active - 1].name),
               "the selected entry is the one at the active index");
-        check(sel[0] == 'T' && sel[5] == ' ', "the selected entry is a track name");
     }
 
-    /* --- Back: restore the parent folder's state and selection */
+    /* --- selecting the playlist row: the bridge's classification decision.
+     * Row 9 (abs 8) is "js minecraft.m3u"; the stock state is moved there and
+     * the adapter refills, then the row must classify as a playlist while an
+     * ordinary audio row beside it does not. */
+    U16(8) = 2; U16(0xa) = 9; U16(0xe) = 9; U16(0x10) = 8; U16(0x12) = 8;
+    refill();
+    {
+        u32 line = U16(0x10);
+        puts_("M3UROW name "); puts_(row_text());
+        puts_(" cls="); putu(ext_is_m3u(cache + (line - 1) * 12)); puts_("\n");
+        check(text_eq(row_text() ? row_text() : "", vrows[8].name),
+              "the playlist row is selected by the stock state fields");
+        check(ext_is_m3u(cache + (line - 1) * 12) == 1,
+              "the playlist row classifies as M3U through the ext field");
+        check(ext_is_m3u(cache + (line - 2) * 12) == 0,
+              "the audio row beside it does not");
+    }
+
+    /* --- Back: restore the parent folder's state and selection. The row
+     * name buffers are shared and were overwritten while the virtual folder
+     * was open, so like the stock app after navigation (update_mode =
+     * LIST_UPDATE_HEAD), the restored page is re-read: refill() regenerates
+     * the text. */
     for (i = 0; i < sizeof(list); i++) list[i] = snap[i];
     for (i = 0; i < sizeof(cache); i++) cache[i] = snap[sizeof(list) + i];
+    refill();
     check(U16(0xe) == 3 && U16(0x10) == 3 && U16(0xc) == 10,
           "Back restores the parent folder's state (active 3 of 10)");
-    check(*(u32 *)(cache + (U16(0x10) - 1) * 12) == 2,
-          "Back restores the pre-open selection row");
+    check(text_eq(*(const char **)(cache + (U16(0x10) - 1) * 12 + 8), vrows[2].name)
+          && !ext_is_m3u(cache + (U16(0x10) - 1) * 12),
+          "Back restores the pre-open selection row (Track C, FLAC)");
     puts_("RESTORED active "); putu(U16(0xe)); puts_(" total "); putu(U16(0xc)); puts_("\n");
 
     puts_(fails ? "ALL FAIL\n" : "ALL PASS\n");

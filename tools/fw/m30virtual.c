@@ -207,6 +207,29 @@ int virtual_is_playlist(const char *name)
     return 0;
 }
 
+virtual_ext_class_t virtual_ext_class(const unsigned char *ext4)
+{
+    unsigned e[4], i;
+
+    if (!ext4) {
+        return VIRTUAL_EXT_OTHER;
+    }
+    /* fold case and ignore trailing spaces: short names pad the field */
+    for (i = 0; i < 4; i++) {
+        e[i] = fold(ext4[i]);
+        if (e[i] == ' ') {
+            e[i] = 0;
+        }
+    }
+    if (e[0] == 'm' && e[1] == '3' && e[2] == 'u' && e[3] == 0) {
+        return VIRTUAL_EXT_M3U;
+    }
+    if (e[0] == 'm' && e[1] == '3' && e[2] == 'u' && e[3] == '8') {
+        return VIRTUAL_EXT_M3U8;
+    }
+    return VIRTUAL_EXT_OTHER;
+}
+
 void virtual_close(void)
 {
     m30pl_close(&v.pl);        /* no-op when the playlist was already closed */

@@ -80,7 +80,8 @@ def main():
     check(any(l.startswith("SCROLLED active ") for l in out),
           "the stock scroll functions drove the state to the end of the script")
     sels = [l for l in out if l.startswith("SELECT ")]
-    check(len(sels) == 1 and sels[0].split(None, 2)[2].endswith(".flac"),
+    check(len(sels) == 1 and " m3u=0" in sels[0]
+          and sels[0].split(None, 2)[2].split(" m3u")[0].endswith(".flac"),
           "OK retrieved a selected virtual entry: %s" % (sels[0] if sels else "none"))
     check(any(l.startswith("RESTORED active 3 total 10") for l in out),
           "Back restored the parent folder's state and selection")

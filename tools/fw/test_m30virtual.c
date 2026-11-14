@@ -122,6 +122,36 @@ static void test_extensions(void)
     check(!virtual_is_playlist(0), "NULL is not a playlist");
 }
 
+static void test_ext_class(void)
+{
+    /* the browser's extension field is 4 bytes, not NUL-terminated: short
+     * names are padded with spaces, and the stock classifier compares all
+     * four bytes */
+    check(virtual_ext_class((const unsigned char *)"M3U ") == VIRTUAL_EXT_M3U,
+          "M3U with a space pad classifies as a playlist");
+    check(virtual_ext_class((const unsigned char *)"m3u ") == VIRTUAL_EXT_M3U,
+          "lower-case m3u classifies (case-insensitive)");
+    check(virtual_ext_class((const unsigned char *)"M3u\0") == VIRTUAL_EXT_M3U,
+          "NUL-padded M3U classifies");
+    check(virtual_ext_class((const unsigned char *)"M3U8") == VIRTUAL_EXT_M3U8,
+          "M3U8 classifies as the 8.3-style playlist");
+    check(virtual_ext_class((const unsigned char *)"m3U8") == VIRTUAL_EXT_M3U8,
+          "mixed-case m3U8 classifies");
+    check(virtual_ext_class((const unsigned char *)"M3UX") == VIRTUAL_EXT_OTHER,
+          "a 4-byte prefix like M3UX is not a playlist");
+    check(virtual_ext_class((const unsigned char *)"M3U8X") == VIRTUAL_EXT_M3U8,
+          "only 4 bytes are compared, so M3U8X is a playlist (stock semantics)");
+    check(virtual_ext_class((const unsigned char *)"FLAC") == VIRTUAL_EXT_OTHER,
+          "FLAC stays an ordinary audio row");
+    check(virtual_ext_class((const unsigned char *)"MP3 ") == VIRTUAL_EXT_OTHER,
+          "MP3 stays an ordinary audio row");
+    check(virtual_ext_class((const unsigned char *)"    ") == VIRTUAL_EXT_OTHER,
+          "an all-space field is not a playlist");
+    check(virtual_ext_class((const unsigned char *)"\xff\xff\xff\xff") == VIRTUAL_EXT_OTHER,
+          "garbage bytes do not crash or match");
+    check(virtual_ext_class(0) == VIRTUAL_EXT_OTHER, "a NULL field is not a playlist");
+}
+
 static void test_basic(const char *wd)
 {
     char path[300];
@@ -392,6 +422,7 @@ int main(int argc, char **argv)
     snprintf(wd, sizeof wd, "%s", argv[1]);
 
     test_extensions();
+    test_ext_class();
     test_basic(wd);
     test_root_playlist(wd);
     test_card_playlist(wd);
