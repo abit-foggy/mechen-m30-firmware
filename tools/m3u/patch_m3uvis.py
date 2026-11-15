@@ -1,18 +1,23 @@
 """Make .m3u/.m3u8 rows visible in the stock file browser (Phase C visibility).
 
-usage: patch_m3uvis.py DRV_IN DRV_OUT BROWSER_IN BROWSER_OUT
+usage: patch_m3uvis.py FAT_IN FAT_OUT EXFAT_IN EXFAT_OUT BROWSER_IN BROWSER_OUT
 
 Three extension tables gate which files the browser lists:
 
-  1. fat_32n.drv, file 0x780 (guest 0xBFC17180): the driver's rom_ext_name table,
-     31 slots. The matcher at 0xBFC16D94 loops idx = 1..31, tests mask bit
-     [31-idx] (`sllv` + `slti <0`), reads table[idx-1], and matches when
-     (table[idx-1] & 0xFFFFFF) == (ext & 0xFFFFFF). VERIFIED UNDER QEMU
-     (tools/m3u/fsmatchtest.py): the compare is an exact, CASE-SENSITIVE
-     24-bit xor, and the fs delivers the extension in the case stored in the
-     FAT long file name - lowercase "m3u" for files like "idk.m3u".
-     So a file is listed iff some slot holds its extension (exact case) AND
-     the caller's 32-bit mask has that slot's bit set.
+  1. fat_32n.drv, file 0x780 (guest 0xBFC17180) and exfatn.drv, file 0x7f8:
+     the drivers' rom_ext_name tables, 31 slots, same layout in both. The two
+     .drv files are mutually exclusive resident banks (both load at 0xbfc16c00);
+     WHICH ONE RUNS DEPENDS ON THE CARD'S FILESYSTEM - the M30 card is exFAT, so
+     exfatn.drv is the live driver there and fat_32n.drv alone was never enough
+     (that is why the first patch round still showed no .m3u on hardware).
+     The matcher (sub_BFC16D94 in fat_32n.drv at file 0x394, file 0x590 in
+     exfatn.drv) loops idx = 1..31, tests mask bit [31-idx] (`sllv` + `slti <0`),
+     reads table[idx-1], and matches when (table[idx-1] & 0xFFFFFF) ==
+     (ext & 0xFFFFFF). VERIFIED UNDER QEMU (tools/m3u/fsmatchtest.py): the
+     compare is an exact, CASE-SENSITIVE 24-bit xor, and the fs delivers the
+     extension in the case stored in the long file name - lowercase "m3u" for
+     files like "idk.m3u". So a file is listed iff some slot holds its
+     extension (exact case) AND the caller's 32-bit mask has that slot's bit set.
 
   2. browser.ap bank 0x40D14E00 (file 0x12500), local table at 0x40D1529C
      (file 0x1299C): 32 slots, slot j <-> mask bit [31-j] (slot 0 is "***"),
@@ -52,6 +57,7 @@ import struct
 import sys
 
 DRV_TABLE = 0x780          # fat_32n.drv file offset of rom_ext_name (guest 0xBFC17180)
+EXFAT_TABLE = 0x7F8        # exfatn.drv file offset of its identical rom_ext_name table
 BANK_FO = 0x12500          # browser.ap file offset of bank 0x40D14E00
 LOC_TABLE = 0x49C          # bank offset of the local table (guest 0x40D1529C)
 RES_TABLE = 0xC188         # browser.ap resident ext array (guest 0xBFC16588)
@@ -101,16 +107,19 @@ def patch(path_in, path_out, sites):
         print("   %s @%#x: %r -> %r" % (path_out, off, stock, new))
 
 
-def main(drv_in, drv_out, brow_in, brow_out):
-    patch(drv_in, drv_out, [(DRV_TABLE + 4 * s, old, new) for s, old, new in DRV_SLOTS])
+def main(fat_in, fat_out, exfat_in, exfat_out, brow_in, brow_out):
+    slots = [(DRV_TABLE + 4 * s, old, new) for s, old, new in DRV_SLOTS]
+    patch(fat_in, fat_out, slots)
+    patch(exfat_in, exfat_out, [(EXFAT_TABLE + 4 * s, old, new) for s, old, new in DRV_SLOTS])
     patch(brow_in, brow_out,
           [(BANK_FO + LOC_TABLE + 4 * s, old, new) for s, old, new in LOC_SLOTS] +
           [(RES_TABLE + 4 * s, old, new) for s, old, new in RES_SLOTS] +
           [(off, struct.pack("<I", MUSIC_MASK), struct.pack("<I", NEW_MASK))
            for off in MASK_SITES])
-    print("   m3u visibility: M3U/M3U8 (bits 5/10) + m3u/m3u8 (bits 8/12) in all three ext tables;"
+    print("   m3u visibility: M3U/M3U8 (bits 5/10) + m3u/m3u8 (bits 8/12) in fat_32n.drv,"
+          " exfatn.drv and the three browser.ap ext tables;"
           " music mask 0x%x -> 0x%x in browser.ap" % (MUSIC_MASK, NEW_MASK))
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:5])
+    main(*sys.argv[1:7])

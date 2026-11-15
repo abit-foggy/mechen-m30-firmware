@@ -9,7 +9,8 @@
 #   --no-playall  leave out shuffle-all mode
 #   --no-keys     leave out the screen-off media keys
 #   --no-m3uhook  leave out the M3U/M3U8 selection hook in the file browser
-#   --no-m3uvis   leave out the M3U/M3U8 visibility slots (AIF/MP2 ext slots repurposed)
+#   --no-m3uvis   leave out the M3U/M3U8 visibility slots (AIF/MP2/POS/AA ext slots
+#                 repurposed in fat_32n.drv, exfatn.drv and the browser.ap tables)
 #   --no-version  leave the Settings > Information version strings stock
 #   --no-library  leave out the whole-card library (keep the stock 4,000-song limit)
 #   --library-bench  diagnostic: scan 100 files, then time the file operations (tools/library/bench.c)
@@ -130,12 +131,15 @@ done
 echo "   blob $(stat -c %s accel_browser.bin) bytes at 0x48714a80, accel_next 0x$NX, accel_prev 0x$PV"
 
 if [ $M3UVIS = 1 ]; then
-  echo "== fat_32n.drv + browser.ap: M3U/M3U8 visibility slots"
-  # repurpose the AIF/MP2 extension-table slots (mask bits 5/10, both inside the
-  # browser's music bitmap 0x7e190ea0) for M3U/M3U8 in both ext tables; the
-  # patch tool asserts the stock slot bytes before writing
+  echo "== fat_32n.drv + exfatn.drv + browser.ap: M3U/M3U8 visibility slots"
+  # repurpose the AIF/MP2/POS/AA extension-table slots (mask bits 5/10/8/12, all
+  # inside the browser's music bitmap 0x7e190ea0) for M3U/M3U8/m3u/m3u8 in BOTH
+  # fs drivers and the browser tables; the M30 card is exFAT, so exfatn.drv
+  # (table at file 0x7f8) is the driver that actually runs there. The patch tool
+  # asserts the stock slot bytes before writing
   cp "$F/fat_32n.drv" fat_32n.drv
-  "$PY" -I "$T/m3u/patch_m3uvis.py" fat_32n.drv fat_32n.drv browser.ap browser.ap | sed 's/^/   /'
+  cp "$F/exfatn.drv" exfatn.drv
+  "$PY" -I "$T/m3u/patch_m3uvis.py" fat_32n.drv fat_32n.drv exfatn.drv exfatn.drv browser.ap browser.ap | sed 's/^/   /'
 fi
 
 if [ $M3UHOOK = 1 ]; then
@@ -152,7 +156,7 @@ if [ $M3UHOOK = 1 ]; then
   "$PY" -I "$T/m3u/patch_m3uhook.py" browser.ap browser.ap m3uhook.bin 0x$HOOK_ADDR 0x$SLOT_ADDR
 fi
 PATCHED="mengine.ap browser.ap music.ap"
-[ $M3UVIS = 1 ] && PATCHED="$PATCHED fat_32n.drv"
+[ $M3UVIS = 1 ] && PATCHED="$PATCHED fat_32n.drv exfatn.drv"
 
 if [ $VERSION_PATCH = 1 ]; then
   CHANNEL=${BUILD_CHANNEL:-dev}
@@ -298,7 +302,7 @@ if [ $TEST = 1 ]; then
     echo "   library:  $(grep -m1 -E 'reproduced|MISMATCH' test_library.txt || echo 'no result')"
   fi
   if [ $M3UVIS = 1 ]; then
-    "$PY" -I "$T/m3u/test_m3uvis.py" "$F/fat_32n.drv" "$F/browser.ap" > test_m3uvis.txt 2>&1 || true
+    "$PY" -I "$T/m3u/test_m3uvis.py" "$F/fat_32n.drv" "$F/browser.ap" "$F/exfatn.drv" > test_m3uvis.txt 2>&1 || true
     grep -q 'test_m3uvis: OK' test_m3uvis.txt && echo 'ALL PASS' >> test_m3uvis.txt || true
     echo "   m3uvis:   $(grep -c '^PASS' test_m3uvis.txt) checks, $(tail -n 1 test_m3uvis.txt)"
   fi

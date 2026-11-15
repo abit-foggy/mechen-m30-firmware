@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Test the M3U/M3U8 visibility patch against the real stock files.
 
-usage: test_m3uvis.py STOCK_fat_32n.drv STOCK_browser.ap
+usage: test_m3uvis.py STOCK_fat_32n.drv STOCK_browser.ap [STOCK_exfatn.drv]
 
 Applies patch_m3uvis.py to temp copies, then checks:
   1. exactly the patched slots/mask words differ from stock (nothing else moved);
   2. a faithful model of the driver matcher (0xBFC16D94: loop idx=1..31,
      mask bit[31-idx], table[idx-1], exact 24-bit compare - case sensitive,
      as verified under QEMU by tools/m3u/fsmatchtest.py) run over the PATCHED
-     driver table admits M3U/m3u and M3U8/m3u8 under the patched music mask,
+     driver tables admits M3U/m3u and M3U8/m3u8 under the patched music mask,
      still admits MP3/FLAC, and no longer admits AIF/MP2/POS;
   3. the same for the browser-local table (0x40D1529C, slot j <-> bit[31-j]);
   4. the stock tables do not admit m3u in any case (the hardware bug).
+
+The M30 card is exFAT, so exfatn.drv (table at file 0x7f8, same slot layout)
+is the driver that actually runs there - it is patched and checked too.
 
 Exits non-zero on any failure.
 """
@@ -26,7 +29,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 MUSIC_MASK = 0x7E190EA0          # bitmap table [0] at 0x40D1531C (stock)
 NEW_MASK = MUSIC_MASK | 0x100 | 0x1000   # bits 8 and 12 added by the patch
-DRV_TABLE, LOC_TABLE, LOC_BANK_FO, RES_TABLE = 0x780, 0x49C, 0x12500, 0xC188
+DRV_TABLE, EXFAT_TABLE, LOC_TABLE, LOC_BANK_FO, RES_TABLE = 0x780, 0x7F8, 0x49C, 0x12500, 0xC188
 MASK_SITES = [0xF98, 0x17FC, 0xBD00, 0x12A1C]
 
 DRV_SLOTS = [(25, b"M3U\x00"), (20, b"M3U8"), (22, b"m3u\x00"), (18, b"m3u8")]
@@ -61,7 +64,7 @@ def classify(table, mask, ext24, base_bit):
     return False
 
 
-def main(stock_drv, stock_brow):
+def main(stock_drv, stock_brow, stock_exfat=None):
     rc = 0
 
     def check(ok, msg):
@@ -72,8 +75,13 @@ def main(stock_drv, stock_brow):
 
     work = tempfile.mkdtemp(prefix="m30vis.")
     drv, brow = os.path.join(work, "fat_32n.drv"), os.path.join(work, "browser.ap")
-    r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "patch_m3uvis.py"),
-                        stock_drv, drv, stock_brow, brow], capture_output=True, text=True)
+    exf = os.path.join(work, "exfatn.drv")
+    args = [stock_drv, drv]
+    if stock_exfat:
+        args += [stock_exfat, exf]
+    args += [stock_brow, brow]
+    r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "patch_m3uvis.py")] + args,
+                       capture_output=True, text=True)
     check(r.returncode == 0, "patch tool ran cleanly")
     if r.returncode:
         print(r.stderr[-800:])
@@ -81,6 +89,8 @@ def main(stock_drv, stock_brow):
 
     sd, sb = open(stock_drv, "rb").read(), open(stock_brow, "rb").read()
     pd, pb = open(drv, "rb").read(), open(brow, "rb").read()
+    se = open(stock_exfat, "rb").read() if stock_exfat else None
+    pe = open(exf, "rb").read() if stock_exfat else None
 
     # 1. exactly the patch sites changed: new bytes in place, all else stock
     sites_d = [(DRV_TABLE + 4 * s, new) for s, new in DRV_SLOTS]
@@ -95,6 +105,12 @@ def main(stock_drv, stock_brow):
         if not any(off <= i < off + 4 for off, _ in sites_b))
     check(ok_d, "driver: slots 25/20/22/18 = M3U/M3U8/m3u/m3u8, every other byte stock")
     check(ok_b, "browser: local 26/21/23/19 + resident 25/20/18 + 4 mask words patched, rest stock")
+    if se is not None:
+        sites_e = [(EXFAT_TABLE + 4 * s, new) for s, new in DRV_SLOTS]
+        ok_e = all(pe[off:off + 4] == new for off, new in sites_e) and all(
+            se[i] == pe[i] for i in range(len(se))
+            if not any(off <= i < off + 4 for off, _ in sites_e))
+        check(ok_e, "exfatn.drv (the live driver on the exFAT card): same 4 slots at 0x7f8, rest stock")
 
     drv_tab = pd[DRV_TABLE:DRV_TABLE + 31 * 4]
     loc_tab = pb[LOC_BANK_FO + LOC_TABLE:LOC_BANK_FO + LOC_TABLE + 32 * 4]
@@ -122,6 +138,23 @@ def main(stock_drv, stock_brow):
     ]
     for mask, ext, want, msg in cases:
         check(classify(drv_tab, mask, struct.unpack("<I", ext)[0], 30) == want, msg)
+
+    # 2b. the exFAT driver's table (same slot layout at file 0x7f8) behaves identically
+    if se is not None:
+        exf_tab = pe[EXFAT_TABLE:EXFAT_TABLE + 31 * 4]
+        for mask, ext, want, msg in [
+            (NEW_MASK, b"m3u\x00", True,  "exfatn.drv: .m3u admitted - THE hardware case on an exFAT card"),
+            (NEW_MASK, b"M3U\x00", True,  "exfatn.drv: .M3U admitted"),
+            (NEW_MASK, b"m3u8",   True,  "exfatn.drv: .m3u8 admitted"),
+            (NEW_MASK, b"M3U8",   True,  "exfatn.drv: .M3U8 admitted"),
+            (NEW_MASK, b"MP3\x00", True,  "exfatn.drv: .mp3 still admitted"),
+            (MUSIC_MASK, b"m3u\x00", False, "exfatn.drv: stock table+mask does NOT admit .m3u (hardware bug)"),
+            (NEW_MASK, b"AIF\x00", False, "exfatn.drv: .aif no longer admitted (slot reused)"),
+        ]:
+            check(classify(exf_tab, mask, struct.unpack("<I", ext)[0], 30) == want, msg)
+        check(not classify(se[EXFAT_TABLE:EXFAT_TABLE + 31 * 4], NEW_MASK,
+                           struct.unpack("<I", b"m3u\x00")[0], 30),
+              "exfatn.drv stock table does not admit .m3u even under the new mask")
 
     # 3. browser-local table model (slot j <-> bit[31-j])
     for mask, ext, want, msg in [
@@ -153,4 +186,4 @@ def main(stock_drv, stock_brow):
 
 
 if __name__ == "__main__":
-    sys.exit(main(*sys.argv[1:3]))
+    sys.exit(main(*sys.argv[1:4]))
