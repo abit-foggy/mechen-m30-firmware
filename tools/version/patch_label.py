@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rename the Settings > Information "modify time" row label to "build:id".
+"""Rename the Settings > Information "modify time" row label to "build".
 
 usage: patch_label.py SETTING.sty OUT.sty
 
@@ -13,7 +13,7 @@ The third %s is fed by sub_40115074's third row pointer, which patch_version.py
 already redirects to the build identifier - so the row reads
 "修改时间:[6d5b8457]".  This patch rewrites the label in every copy to
 
-    "...build:id:[%s]\0"
+    "...build:[%s]\0"
 
 Each new string is 8 bytes longer, and the groups have no slack, so the content
 tail from the end of each old string on is shifted right inside the fixed-size
@@ -46,7 +46,7 @@ STOCK_INFO = struct.pack('<30H',
     0x8F6F, 0x4EF6, 0x7248, 0x672C, 0x3A, 0x5B, 0x25, 0x73, 0x5D, 0x0D, 0x0A,  # 软件版本:[%s]\r\n
     0x4FEE, 0x6539, 0x65F6, 0x95F4, 0x3A, 0x5B, 0x25, 0x73, 0x5D, 0x00)      # 修改时间:[%s]\0
 OLD_LABEL = struct.pack('<5H', 0x4FEE, 0x6539, 0x65F6, 0x95F4, 0x3A)      # 修改时间:
-NEW_LABEL = 'build:id:'.encode('utf-16-le')
+NEW_LABEL = 'build:'.encode('utf-16-le')
 DELTA = len(NEW_LABEL) - len(OLD_LABEL)
 
 
@@ -175,7 +175,7 @@ def main(argv):
 
     open(out, 'wb').write(r)
     for eoff, p, poff, plen, s in targets:
-        print('setting.sty: group %#x pair %d label 修改时间 -> build:id (string %#x -> %#x bytes)' % (
+        print('setting.sty: group %#x pair %d label 修改时间 -> build (string %#x -> %#x bytes)' % (
             eoff, p, plen, plen + DELTA))
     print('   content length %#x -> %#x, file size unchanged %#x, %d strings changed' % (
         content_len, content_len + total, len(d), n_changed))

@@ -6,7 +6,7 @@ usage: test_label.py STOCK_setting.sty PATCHED_setting.sty
 Checks, against the real stock file:
   1. the patch tool ran cleanly and the file size is unchanged (repack constraint);
   2. exactly one string in the whole image changed: the Information format string
-     in group 19 pair 107, 修改时间 -> build:id; every other string in every
+     in group 19 pair 107, 修改时间 -> build; every other string in every
      group decodes byte-identically;
   3. header/table bookkeeping is consistent: content length and XML offset grew
      by exactly the string delta, group 19's length grew by the same, every other
@@ -33,7 +33,7 @@ STOCK_INFO = struct.pack('<30H',
     0x8F6F, 0x4EF6, 0x7248, 0x672C, 0x3A, 0x5B, 0x25, 0x73, 0x5D, 0x0D, 0x0A,
     0x4FEE, 0x6539, 0x65F6, 0x95F4, 0x3A, 0x5B, 0x25, 0x73, 0x5D, 0x00)
 OLD = struct.pack('<5H', 0x4FEE, 0x6539, 0x65F6, 0x95F4, 0x3A)   # 修改时间:
-NEW = 'build:id:'.encode('utf-16-le')
+NEW = 'build:'.encode('utf-16-le')
 NEW_INFO = STOCK_INFO.replace(OLD, NEW)
 DELTA = len(NEW_INFO) - len(STOCK_INFO)
 
@@ -76,10 +76,10 @@ def main(stock, patched):
     changed = [(g, p, o, n) for (g, p, o), (g2, p2, n) in zip(ss, ps)
                if o != n]
     check(len(changed) == 2 and all(o.replace(OLD, NEW) == n for g, p, o, n in changed),
-          "exactly the two language copies of the Information format changed (修改时间 -> build:id)")
+          "exactly the two language copies of the Information format changed (修改时间 -> build)")
     check(all(n.endswith(NEW.rstrip(b'\x00') + '[%s]\x00'.encode('utf-16-le')) or
               NEW in n for g, p, o, n in changed),
-          "new row 3 reads build:id:[%s] in both copies")
+          "new row 3 reads build:[%s] in both copies")
 
     # insert points = end of each changed stock string
     ins_points = []
