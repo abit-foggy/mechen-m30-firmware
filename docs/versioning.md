@@ -64,6 +64,13 @@ that only the two halfwords and the two slots changed. The re-encoded
 instructions were verified by disassembling the patched bank in IDA Pro:
 `la $v0, "0.1.0-dev"` / `la $v0, "d3e852eb"`.
 
+The third row's label ("修改时间", "modify time") lives in `setting.sty` as the
+Information format string (pair 107 of the Simplified and Traditional groups).
+`tools/version/patch_label.py` rewrites it to `build:` so the row reads
+`build:[<identifier>]`; the longer string shifts the .sty content tail inside
+the fixed-size file (all table offsets fixed up, size unchanged so repack still
+accepts it), verified by `tools/version/test_label.py` (13 checks).
+
 A successful repack does **not** prove the screen renders correctly — that is
 what the hardware checklist below is for.
 
@@ -112,7 +119,8 @@ the player **Setting > Auto upgrade**), then on **Settings > Information** check
 
 ## Tests
 
-`tools/version/test_version.py` (run by `./build.sh --test`) covers: per-channel
+`tools/version/test_version.py` and `tools/version/test_label.py` (run by
+`./build.sh --test`) cover: per-channel
 displayed version, dev build-ID determinism and sensitivity to source/config/
 uncommitted files (and insensitivity to `build/` output), nightly short-SHA and
 dirty-tree rejection, release tag match/mismatch and dirty-tree rejection,
