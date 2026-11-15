@@ -4,10 +4,12 @@
 !/.gitignore
 !/README.md
 !/LICENSE
+!/VERSION
 !/build.sh
 !/tools/
 !/patches/
 !/docs/
+!/.github/
 
 /tools/**/__pycache__/
 /tools/*.pyc
