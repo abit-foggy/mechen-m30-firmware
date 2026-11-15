@@ -3,11 +3,13 @@
 #
 # usage: ./build.sh [--test] [--no-playall] [--no-keys] [--no-library] [--theme DIR]
 #                   STOCK_MECHEN_M30.HEX [OUTDIR]
-#   --test        also run the QEMU harnesses (shuffle, shuffle all, scroll, keys, library)
+#   --test        also run the harnesses (shuffle, shuffle all, scroll, keys, library, m3u vis/hook)
 #   --theme DIR   repaint UI bitmaps from the theme in DIR (tools/theme/sty.py), a folder of
 #                 <sty>_<bitmap-index>.ppm images
 #   --no-playall  leave out shuffle-all mode
 #   --no-keys     leave out the screen-off media keys
+#   --no-m3uhook  leave out the M3U/M3U8 selection hook in the file browser
+#   --no-m3uvis   leave out the M3U/M3U8 visibility slots (AIF/MP2 ext slots repurposed)
 #   --no-library  leave out the whole-card library (keep the stock 4,000-song limit)
 #   --library-bench  diagnostic: scan 100 files, then time the file operations (tools/library/bench.c)
 #   --library-probe  diagnostic: scan 100 files, run the real passes, leave MUSIC.TMP and the
@@ -20,7 +22,7 @@
 #   CROSS=mips64-linux-gnu-   ATJBOOTTOOL=atjboottool   QEMU=qemu-mipsel-static   PYTHON=python3
 set -euo pipefail
 
-TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
+TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
 while [ $# -gt 0 ]; do
   case $1 in
     --test) TEST=1; shift ;;
@@ -28,6 +30,7 @@ while [ $# -gt 0 ]; do
     --no-playall) PLAYALL=0; shift ;;
     --no-keys) KEYS=0; shift ;;
     --no-m3uhook) M3UHOOK=0; shift ;;
+    --no-m3uvis) M3UVIS=0; shift ;;
     --no-library) LIBRARY=0; shift ;;
     --library-bench) LIB_SRC=bench.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
     --library-probe) LIB_DEFS=-DPROBE; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
@@ -122,6 +125,15 @@ done
 "$PY" -I "$T/scroll/patch_scroll.py" "$F/music.ap" 0x2d200 accel_music.bin music.ap "$NX" "$PV"
 echo "   blob $(stat -c %s accel_browser.bin) bytes at 0x48714a80, accel_next 0x$NX, accel_prev 0x$PV"
 
+if [ $M3UVIS = 1 ]; then
+  echo "== fat_32n.drv + browser.ap: M3U/M3U8 visibility slots"
+  # repurpose the AIF/MP2 extension-table slots (mask bits 5/10, both inside the
+  # browser's music bitmap 0x7e190ea0) for M3U/M3U8 in both ext tables; the
+  # patch tool asserts the stock slot bytes before writing
+  cp "$F/fat_32n.drv" fat_32n.drv
+  "$PY" -I "$T/m3u/patch_m3uvis.py" fat_32n.drv fat_32n.drv browser.ap browser.ap | sed 's/^/   /'
+fi
+
 if [ $M3UHOOK = 1 ]; then
   echo "== browser.ap: M3U/M3U8 selection hook"
   "${CROSS}gcc" $CFLAGS -x assembler-with-cpp -c -o m3uhook.raw.o "$T/m3u/m3uhook.S"
@@ -136,6 +148,7 @@ if [ $M3UHOOK = 1 ]; then
   "$PY" -I "$T/m3u/patch_m3uhook.py" browser.ap browser.ap m3uhook.bin 0x$HOOK_ADDR 0x$SLOT_ADDR
 fi
 PATCHED="mengine.ap browser.ap music.ap"
+[ $M3UVIS = 1 ] && PATCHED="$PATCHED fat_32n.drv"
 
 if [ $KEYS = 1 ]; then
   echo "== $KEY_APPS: screen-off media keys"
@@ -262,6 +275,17 @@ if [ $TEST = 1 ]; then
     "$PY" -I "$T/library/mklib.py" 6000 t_library/lib6k.lib > /dev/null
     CROSS=$CROSS QEMU=$QEMU PYTHON=$PY "$T/library/test.sh" "$F/playlist.ap" t_library/lib6k.lib t_library new > test_library.txt 2>&1 || true
     echo "   library:  $(grep -m1 -E 'reproduced|MISMATCH' test_library.txt || echo 'no result')"
+  fi
+  if [ $M3UVIS = 1 ]; then
+    "$PY" -I "$T/m3u/test_m3uvis.py" "$F/fat_32n.drv" "$F/browser.ap" > test_m3uvis.txt 2>&1 || true
+    grep -q 'test_m3uvis: OK' test_m3uvis.txt && echo 'ALL PASS' >> test_m3uvis.txt || true
+    echo "   m3uvis:   $(grep -c '^PASS' test_m3uvis.txt) checks, $(tail -n 1 test_m3uvis.txt)"
+  fi
+  if [ $M3UHOOK = 1 ]; then
+    M30_HOOK_BIN=$PWD/m3uhook.bin M30_HOOK_ADDR=0x$HOOK_ADDR M30_HOOK_SLOT=0x$SLOT_ADDR \
+      CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/m3uhooktest.py" > test_m3uhook.txt 2>&1 || true
+    grep -q 'm3uhooktest: OK' test_m3uhook.txt && echo 'ALL PASS' >> test_m3uhook.txt || true
+    echo "   m3uhook:  $(tail -n 1 test_m3uhook.txt)"
   fi
   for f in test_*.txt; do grep -q '^ALL PASS' $f || { echo "   $f: no ALL PASS line"; echo FAIL >> missing_pass.txt; }; done
   for f in t_scroll/out_*.txt; do grep -q '^events 30000 .* failures 0$' $f || { echo "   $f: incomplete"; echo FAIL >> missing_pass.txt; }; done
