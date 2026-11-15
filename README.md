@@ -195,6 +195,7 @@ The repository contains these files and folders:
 | `tools/scroll/` | Scroll acceleration (`accel.c`, `tramp.S`), the app patcher, and the harness. |
 | `tools/keys/` | Screen-off buttons (`keypass.S`), the app patcher, and the harness. |
 | `tools/library/` | Whole-card library: the file-backed index passes (`index.c`), their loader (`loader.c`), the app patcher (`patch_library.py`), the QEMU harness that runs the stock or the new passes (`harness.c`, `testbanks.py`, `test.sh`), a Python model of the new passes (`libmodel.py`), a synthetic library generator (`mklib.py`), and library comparison tools (`libdiff.py`, `libgroups.py`). See `docs/library-builder.md`. |
+| `tools/theme/` | Theme switching: `sty.py` lists, dumps and repaints the `.sty` UI bitmaps, and `make_example_theme.py` writes a starter theme. `./build.sh --theme DIR` applies one. See `docs/theme-switching.md`. |
 | `tools/patch_mengine.py` | Applies the shuffle fix and shuffle-all code to `mengine.ap`. |
 | `tools/bps.py` | Creates and applies the BPS patches that releases use. |
 | `tools/repack_fw.py`, `tools/fwu_repack.py` | Rebuild the FWU, AFI, and FWIMAGE.FW layers with new checksums and encryption. |
