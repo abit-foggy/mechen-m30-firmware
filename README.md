@@ -121,6 +121,14 @@ The script takes these options:
 - `--test`: runs the QEMU tests. They take a few minutes.
 - `--no-playall`: leaves out shuffle-all mode.
 - `--no-keys`: leaves out the screen-off buttons patch.
+- `--no-version`: leaves the Settings > Information screen stock.
+
+Every build identifies itself on the player under **Setting** > **Information** (model row unchanged):
+`BUILD_CHANNEL=dev` (default) shows `0.1.0-dev` plus a deterministic build ID derived from the source and
+build options, `nightly` shows `0.1.0-nightly` plus the short commit SHA (clean tree required), and
+`release` shows `0.1.0-release` plus the tag (requires `HEAD` exactly tagged `v0.1.0`). The base version
+lives in the `VERSION` file; the build also writes the metadata to `build/version.json`. See
+[docs/versioning.md](docs/versioning.md).
 
 With the tested toolchain, the full build is byte-identical to the v5 release, SHA-256 `af999b7bf15e4a6412e7fc119bff3e59a4a3cfd2079bcf0e47b9662bdd40936c`, which runs on the test player. To build an earlier release, check out its tag (`v3`, `v4`) first. A different compiler version can produce a different but valid file.
 
@@ -196,6 +204,7 @@ The repository contains these files and folders:
 | `tools/keys/` | Screen-off buttons (`keypass.S`), the app patcher, and the harness. |
 | `tools/library/` | Whole-card library: the file-backed index passes (`index.c`), their loader (`loader.c`), the app patcher (`patch_library.py`), the QEMU harness that runs the stock or the new passes (`harness.c`, `testbanks.py`, `test.sh`), a Python model of the new passes (`libmodel.py`), a synthetic library generator (`mklib.py`), and library comparison tools (`libdiff.py`, `libgroups.py`). See `docs/library-builder.md`. |
 | `tools/theme/` | Theme switching: `sty.py` lists, dumps and repaints the `.sty` UI bitmaps, and `make_example_theme.py` writes a starter theme. `./build.sh --theme DIR` applies one. See `docs/theme-switching.md`. |
+| `tools/version/` | Firmware versioning: `version.py` computes the per-channel version and build identifier from the `VERSION` file, `patch_version.py` redirects the Settings > Information strings in `setting.ap`, and `test_version.py` is the test suite. See `docs/versioning.md`. |
 | `tools/patch_mengine.py` | Applies the shuffle fix and shuffle-all code to `mengine.ap`. |
 | `tools/bps.py` | Creates and applies the BPS patches that releases use. |
 | `tools/repack_fw.py`, `tools/fwu_repack.py` | Rebuild the FWU, AFI, and FWIMAGE.FW layers with new checksums and encryption. |
