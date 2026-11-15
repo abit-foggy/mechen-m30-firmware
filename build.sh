@@ -3,13 +3,14 @@
 #
 # usage: ./build.sh [--test] [--no-playall] [--no-keys] [--no-library] [--theme DIR]
 #                   STOCK_MECHEN_M30.HEX [OUTDIR]
-#   --test        also run the harnesses (shuffle, shuffle all, scroll, keys, library, m3u vis/hook)
+#   --test        also run the harnesses (shuffle, shuffle all, scroll, keys, library, m3u vis/hook, version)
 #   --theme DIR   repaint UI bitmaps from the theme in DIR (tools/theme/sty.py), a folder of
 #                 <sty>_<bitmap-index>.ppm images
 #   --no-playall  leave out shuffle-all mode
 #   --no-keys     leave out the screen-off media keys
 #   --no-m3uhook  leave out the M3U/M3U8 selection hook in the file browser
 #   --no-m3uvis   leave out the M3U/M3U8 visibility slots (AIF/MP2 ext slots repurposed)
+#   --no-version  leave the Settings > Information version strings stock
 #   --no-library  leave out the whole-card library (keep the stock 4,000-song limit)
 #   --library-bench  diagnostic: scan 100 files, then time the file operations (tools/library/bench.c)
 #   --library-probe  diagnostic: scan 100 files, run the real passes, leave MUSIC.TMP and the
@@ -20,9 +21,11 @@
 #                    IOTEST.OPS in the card root with self-describing data (tools/library/replay.c)
 # Writes OUTDIR/MECHEN_M30.HEX (default OUTDIR: build). Tools, overridable from the environment:
 #   CROSS=mips64-linux-gnu-   ATJBOOTTOOL=atjboottool   QEMU=qemu-mipsel-static   PYTHON=python3
+#   BUILD_CHANNEL=dev|nightly|release  version shown on Settings > Information (default dev;
+#                                      see docs/versioning.md; metadata lands in OUTDIR/version.json)
 set -euo pipefail
 
-TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
+TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 VERSION_PATCH=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
 while [ $# -gt 0 ]; do
   case $1 in
     --test) TEST=1; shift ;;
@@ -31,16 +34,17 @@ while [ $# -gt 0 ]; do
     --no-keys) KEYS=0; shift ;;
     --no-m3uhook) M3UHOOK=0; shift ;;
     --no-m3uvis) M3UVIS=0; shift ;;
+    --no-version) VERSION_PATCH=0; shift ;;
     --no-library) LIBRARY=0; shift ;;
     --library-bench) LIB_SRC=bench.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
     --library-probe) LIB_DEFS=-DPROBE; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
     --library-iotest) LIB_SRC=iotest.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
     --library-replay) LIB_SRC=replay.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
     *) break ;;
   esac
 done
-[ $# -ge 1 ] || { sed -n '2,10p' "$0"; exit 2; }
+[ $# -ge 1 ] || { sed -n '2,13p' "$0"; exit 2; }
 KEY_APPS="browser music mainmenu playlist setting"
 
 ROOT=$(cd "$(dirname "$0")" && pwd); T=$ROOT/tools
@@ -149,6 +153,23 @@ if [ $M3UHOOK = 1 ]; then
 fi
 PATCHED="mengine.ap browser.ap music.ap"
 [ $M3UVIS = 1 ] && PATCHED="$PATCHED fat_32n.drv"
+
+if [ $VERSION_PATCH = 1 ]; then
+  CHANNEL=${BUILD_CHANNEL:-dev}
+  # the config string is folded into the dev build ID, so every build option that
+  # changes the firmware changes the identifier shown on the device
+  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none}"
+  echo "== setting.ap: Information screen version (channel $CHANNEL)"
+  VMETA=$("$PY" -I "$T/version/version.py" --channel "$CHANNEL" --config "$CONFIG" --out "$OUT/version.json") || {
+    echo "   channel $CHANNEL rejected by tools/version/version.py (nightly/release need a clean, correctly tagged tree)"; exit 2; }
+  eval "$VMETA"
+  echo "   channel=$CHANNEL version=$VERSION ident=$IDENT (base $BASE from VERSION$( [ $DIRTY = 1 ] && echo ', DIRTY' ))"
+  cp "$F/setting.ap" setting.ap
+  # new version + identifier strings go into the zero tail of bank 0x40114c00 and the
+  # two row `la`s in sub_40115074 are redirected; stock bytes are asserted first
+  "$PY" -I "$T/version/patch_version.py" setting.ap setting.ap "$VERSION" "$IDENT" | sed 's/^/   /'
+  case " $PATCHED " in *" setting.ap "*) ;; *) PATCHED="$PATCHED setting.ap" ;; esac
+fi
 
 if [ $KEYS = 1 ]; then
   echo "== $KEY_APPS: screen-off media keys"
@@ -286,6 +307,11 @@ if [ $TEST = 1 ]; then
       CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/m3uhooktest.py" > test_m3uhook.txt 2>&1 || true
     grep -q 'm3uhooktest: OK' test_m3uhook.txt && echo 'ALL PASS' >> test_m3uhook.txt || true
     echo "   m3uhook:  $(tail -n 1 test_m3uhook.txt)"
+  fi
+  if [ $VERSION_PATCH = 1 ]; then
+    "$PY" -I "$T/version/test_version.py" "$F/setting.ap" setting.ap "$VERSION" "$IDENT" "$CHANNEL" > test_version.txt 2>&1 || true
+    grep -q 'test_version: OK' test_version.txt && echo 'ALL PASS' >> test_version.txt || true
+    echo "   version:  $(grep -c '^PASS' test_version.txt) checks, $(tail -n 1 test_version.txt)"
   fi
   for f in test_*.txt; do grep -q '^ALL PASS' $f || { echo "   $f: no ALL PASS line"; echo FAIL >> missing_pass.txt; }; done
   for f in t_scroll/out_*.txt; do grep -q '^events 30000 .* failures 0$' $f || { echo "   $f: incomplete"; echo FAIL >> missing_pass.txt; }; done
