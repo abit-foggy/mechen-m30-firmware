@@ -1,37 +1,31 @@
 #!/usr/bin/env python3
-"""Rename the Settings > Information "modify time" row label to "build".
+"""Rename the Settings > Information "Modify time" row label to "Build ID:".
 
 usage: patch_label.py SETTING.sty OUT.sty
 
 The Information screen body lives in setting.sty as one UTF-16LE format string
-per language group - pair 107 of group 19 (file 0x23642, Simplified) and of
-group 20 (file 0x249f6, Traditional):
+per language (pair 107 of each of the 28 string groups).  Most groups - all the
+European ones, including the English group the player UI uses - label the third
+row with the English text "Modify time:"; the CJK groups use their own 5-char
+labels, which are too short for "Build ID:" and are left stock.
 
-    "型号:[%s]\r\n软件版本:[%s]\r\n修改时间:[%s]\0"      (修改时间 = "modify time")
+    "Model:[%s]\r\nSoftware version:[%s]\r\nModify time:[%s]\0"
 
 The third %s is fed by sub_40115074's third row pointer, which patch_version.py
 already redirects to the build identifier - so the row reads
-"修改时间:[6d5b8457]".  This patch rewrites the label in every copy to
+"Modify time:[6d5b8457]".  This patch rewrites the label in place to
 
-    "...build:[%s]\0"
+    "Build ID:   [%s]"          (padded with spaces to the original length)
 
-Each new string is 8 bytes longer, and the groups have no slack, so the content
-tail from the end of each old string on is shifted right inside the fixed-size
-file:
+The replacement is EXACTLY as long as the original label (12 UTF-16 units), so
+this is a pure in-place byte swap: no shifting, the file size, the content
+length at 0x08, the XML offset at 0x30, every table entry and every other
+string stay byte-identical, and repack_fw.py's fixed-slot constraint holds
+trivially.  (Group 27 uses "Modify time " with a space instead of the colon -
+both spellings are handled.)
 
-  - every resource table entry at/after an insert point moves +8 per insert
-    point before it, and each affected group's length grows accordingly (file
-    size and slot count are unchanged, so repack_fw.py still accepts the image);
-  - every string sub-table pair (in every group) at/after an insert point moves
-    the same way; each target pair gets the new length;
-  - the XML ResDescriptor offset at 0x30 and the content length at 0x08 grow by
-    the total delta (the XML holds names only, no offsets).
-
-The last bytes of the file beyond the old content length are dropped.  Every
-stock byte the patch depends on is asserted first (magic, tables, the target
-strings), and the result is re-read: all other strings must decode
-byte-identically, and only the header words, the table entries and the shifted
-content region may differ.
+Every stock byte the patch depends on is asserted first, and the result is
+re-read: only the matched label spans may differ from the input.
 """
 import struct
 import sys
@@ -39,15 +33,8 @@ import sys
 MAGIC = b'RU3\x19'
 VERSION = b'V100'
 ENTRY = 16
-# exact code units: 型号： uses a fullwidth colon (U+FF1A), the other two rows an
-# ASCII ':' - the stock string mixes both
-STOCK_INFO = struct.pack('<30H',
-    0x578B, 0x53F7, 0xFF1A, 0x5B, 0x25, 0x73, 0x5D, 0x0D, 0x0A,             # 型号：[%s]\r\n
-    0x8F6F, 0x4EF6, 0x7248, 0x672C, 0x3A, 0x5B, 0x25, 0x73, 0x5D, 0x0D, 0x0A,  # 软件版本:[%s]\r\n
-    0x4FEE, 0x6539, 0x65F6, 0x95F4, 0x3A, 0x5B, 0x25, 0x73, 0x5D, 0x00)      # 修改时间:[%s]\0
-OLD_LABEL = struct.pack('<5H', 0x4FEE, 0x6539, 0x65F6, 0x95F4, 0x3A)      # 修改时间:
-NEW_LABEL = 'build:'.encode('utf-16-le')
-DELTA = len(NEW_LABEL) - len(OLD_LABEL)
+OLD_LABELS = ['Modify time:', 'Modify time ']                 # 12 chars each
+NEW_LABEL = 'Build ID:'.ljust(12)                             # same 12 chars
 
 
 def parse_entries(d):
@@ -68,11 +55,11 @@ def parse_entries(d):
 def main(argv):
     src, out = argv
     d = open(src, 'rb').read()
-    content_len = struct.unpack_from('<I', d, 8)[0]
-    xml_off = struct.unpack_from('<I', d, 0x30)[0]
-    assert content_len <= len(d), 'content length past end of file'
+    olds = [s.encode('utf-16-le') for s in OLD_LABELS]
+    new = NEW_LABEL.encode('utf-16-le')
+    assert len(new) == len(olds[0]), 'replacement must keep the label length'
 
-    # locate every string holding the label, as (group_eoff, pair, poff, plen)
+    # locate every string holding a Modify-time label, as (group_eoff, pair, poff, plen, which)
     targets = []
     for at, o, etype, a, b, eoff, elen in parse_entries(d):
         if etype != 1:
@@ -82,104 +69,41 @@ def main(argv):
             assert eoff <= poff and poff + plen <= eoff + elen, \
                 'pair %d of group %#x points outside its blob' % (p, eoff)
             s = d[poff:poff + plen]
-            if s.find(OLD_LABEL) >= 0:
-                targets.append((eoff, p, poff, plen, s))
-    assert targets, 'no string with the 修改时间 label found'
-    targets.sort(key=lambda t: t[2])
-    for eoff, p, poff, plen, s in targets:
-        assert s.replace(OLD_LABEL, NEW_LABEL).find(OLD_LABEL) < 0
-    ins_points = [poff + plen for _, _, poff, plen, _ in targets]   # end of each old string
-    total = DELTA * len(targets)
-    assert content_len + total <= len(d), 'grown content would exceed the fixed file size'
+            for k, old in enumerate(olds):
+                if s.find(old) >= 0:
+                    targets.append((eoff, p, poff, plen, k))
+    assert targets, 'no string with a Modify-time label found'
+    assert not any(NEW_LABEL.encode('utf-16-le') in d[poff:poff + plen]
+                   for _, _, poff, plen, _ in targets), 'already patched'
 
-    def shift(o):
-        """file offset o in the stock image -> offset in the patched image."""
-        return o + DELTA * sum(1 for ins in ins_points if ins <= o)
-
-    # rebuild the content: old string -> new string at each target, the tail
-    # between/after them copied verbatim (shifts right by the cumulative delta)
-    b = bytearray(d[:targets[0][2]])          # up to the first target string
-    for k, ((eoff, p, poff, plen, s), ins) in enumerate(zip(targets, ins_points)):
-        b += s.replace(OLD_LABEL, NEW_LABEL)  # the grown string
-        nxt = targets[k + 1][2] if k + 1 < len(targets) else content_len
-        b += d[ins:nxt]                       # verbatim tail up to the next target
-    # the last `total` bytes of the file lie beyond the old content length and are dropped
-    b += d[content_len:len(d) - total]
-    assert len(b) == len(d), 'rebuilt file size changed: %#x vs %#x' % (len(b), len(d))
-
-    # resource table entries: move those at/after an insert point; grow affected groups
-    for at, o, etype, a, b2, eoff, elen in parse_entries(d):
-        if eoff >= ins_points[0]:
-            struct.pack_into('<I', b, o, shift(eoff))
-        grew = DELTA * sum(1 for t in targets if t[0] == eoff)
-        if grew:
-            struct.pack_into('<I', b, o + 4, elen + grew)
-    # string sub-table pairs: move those at/after an insert point; retarget lengths
-    for at, o, etype, a, b2, eoff, elen in parse_entries(d):
-        if etype != 1:
-            continue
-        base = shift(eoff)
-        for p in range(a):
-            poff, plen = struct.unpack_from('<II', d, eoff + 8 * p)
-            nlen = plen + DELTA if any(t[0] == eoff and t[1] == p for t in targets) else plen
-            struct.pack_into('<II', b, base + 8 * p, shift(poff), nlen)
-    # header fields
-    struct.pack_into('<I', b, 8, content_len + total)
-    if xml_off >= ins_points[0]:
-        struct.pack_into('<I', b, 0x30, shift(xml_off))
+    b = bytearray(d)
+    for eoff, p, poff, plen, k in targets:
+        s = bytes(b[poff:poff + plen])
+        i = s.find(olds[k])
+        b[poff + i:poff + i + len(new)] = new
 
     # ---- read-back verification ----
     r = bytes(b)
     assert len(r) == len(d), 'file size changed'
-    assert struct.unpack_from('<I', r, 8)[0] == content_len + total
-    # every string decodes identically except the targets
-    def all_strings(img):
-        out = []
-        for at, o, etype, a, b2, eoff, elen in parse_entries(img):
-            if etype != 1:
-                continue
-            for p in range(a):
-                poff, plen = struct.unpack_from('<II', img, eoff + 8 * p)
-                out.append((eoff, p, img[poff:poff + plen]))
-        return out
-    ss, ps = all_strings(d), all_strings(r)
-    assert len(ss) == len(ps), 'string count changed'
-    n_changed = 0
-    for (g1, p1, s1), (g2, p2, s2) in zip(ss, ps):
-        assert shift(g1) == g2 and p1 == p2, 'string order changed at %#x/%d' % (g1, p1)
-        if s1 != s2:
-            assert s1.replace(OLD_LABEL, NEW_LABEL) == s2, 'unexpected string change at %#x/%d' % (g1, p1)
-            n_changed += 1
-    assert n_changed == len(targets), 'changed %d strings, expected %d' % (n_changed, len(targets))
-    # resource blobs identical modulo the shift (affected groups grow by DELTA each)
-    for at, o, etype, a, b2, eoff, elen in parse_entries(r):
-        old_eoff = eoff
-        for ins in ins_points:
-            if ins <= old_eoff:
-                old_eoff -= DELTA
-        old_elen = elen - DELTA * sum(1 for t in targets if t[0] == old_eoff)
-        if old_eoff != eoff or old_elen != elen:
-            continue                      # moved and/or grown group: strings checked above
-        assert r[eoff:eoff + elen] == d[eoff:eoff + elen], 'resource at %#x corrupted' % eoff
-    # bytes before the first insert point: only header fields and table entries
-    allowed = set(range(8, 12)) | set(range(0x30, 0x34))
-    for at, o, etype, a, b2, eoff, elen in parse_entries(d):
-        allowed.update(range(o, o + ENTRY))
-        if etype == 1:
-            allowed.update(range(eoff, eoff + 8 * a))   # group sub-tables (pair offsets)
-    for _, _, poff, plen, _ in targets:
-        allowed.update(range(poff, poff + plen))        # the target strings themselves
-    diff = [i for i in range(ins_points[0]) if d[i] != r[i]]
-    assert set(diff) <= allowed, 'bytes changed outside header/tables before the first insert point: %r' % [
-        hex(i) for i in diff if i not in allowed][:12]
+    assert struct.unpack_from('<I', r, 8)[0] == struct.unpack_from('<I', d, 8)[0]
+    assert r[:8] == d[:8] and r[0x30:0x34] == d[0x30:0x34], 'header fields moved'
+    allowed = set()
+    for eoff, p, poff, plen, k in targets:
+        i = d[poff:poff + plen].find(olds[k])
+        allowed.update(range(poff + i, poff + i + len(new)))
+    diff = [i for i in range(len(d)) if d[i] != r[i]]
+    assert set(diff) <= allowed, 'bytes changed outside the label spans: %r' % [
+        hex(i) for i in diff if i not in allowed][:8]
+    # every patched string decodes with the new label and intact format
+    for eoff, p, poff, plen, k in targets:
+        s = r[poff:poff + plen].decode('utf-16-le')
+        assert NEW_LABEL in s and OLD_LABELS[k] not in s, 'label swap failed at %#x/%d' % (eoff, p)
+        assert s.count('[%s]') == d[poff:poff + plen].decode('utf-16-le').count('[%s]')
 
     open(out, 'wb').write(r)
-    for eoff, p, poff, plen, s in targets:
-        print('setting.sty: group %#x pair %d label 修改时间 -> build (string %#x -> %#x bytes)' % (
-            eoff, p, plen, plen + DELTA))
-    print('   content length %#x -> %#x, file size unchanged %#x, %d strings changed' % (
-        content_len, content_len + total, len(d), n_changed))
-    print('   new row text: %r' % targets[0][4].replace(OLD_LABEL, NEW_LABEL).decode('utf-16-le'))
+    print('setting.sty: %d language copies relabeled "Modify time" -> "%s" (in place, size unchanged %#x)'
+          % (len(targets), NEW_LABEL.rstrip(), len(d)))
+    print('   new row text: %r' % r[targets[0][2]:targets[0][2] + targets[0][3]].decode('utf-16-le'))
     return 0
 
 
