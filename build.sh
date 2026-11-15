@@ -173,6 +173,12 @@ if [ $VERSION_PATCH = 1 ]; then
   # two row `la`s in sub_40115074 are redirected; stock bytes are asserted first
   "$PY" -I "$T/version/patch_version.py" setting.ap setting.ap "$VERSION" "$IDENT" | sed 's/^/   /'
   case " $PATCHED " in *" setting.ap "*) ;; *) PATCHED="$PATCHED setting.ap" ;; esac
+  # the third Information row shows the build identifier, so its 修改时间
+  # ("modify time") label becomes "build:id"; the .sty stays exactly the size of
+  # its FWIMAGE.FW slot (the content tail shifts inside the fixed-size file)
+  cp "$F/setting.sty" setting.sty
+  "$PY" -I "$T/version/patch_label.py" setting.sty setting.sty | sed 's/^/   /'
+  case " $PATCHED " in *" setting.sty "*) ;; *) PATCHED="$PATCHED setting.sty" ;; esac
 fi
 
 if [ $KEYS = 1 ]; then
@@ -316,6 +322,9 @@ if [ $TEST = 1 ]; then
     "$PY" -I "$T/version/test_version.py" "$F/setting.ap" setting.ap "$VERSION" "$IDENT" "$CHANNEL" > test_version.txt 2>&1 || true
     grep -q 'test_version: OK' test_version.txt && echo 'ALL PASS' >> test_version.txt || true
     echo "   version:  $(grep -c '^PASS' test_version.txt) checks, $(tail -n 1 test_version.txt)"
+    "$PY" -I "$T/version/test_label.py" "$F/setting.sty" setting.sty > test_label.txt 2>&1 || true
+    grep -q 'test_label: OK' test_label.txt && echo 'ALL PASS' >> test_label.txt || true
+    echo "   label:    $(grep -c '^PASS' test_label.txt) checks, $(tail -n 1 test_label.txt)"
   fi
   for f in test_*.txt; do grep -q '^ALL PASS' $f || { echo "   $f: no ALL PASS line"; echo FAIL >> missing_pass.txt; }; done
   for f in t_scroll/out_*.txt; do grep -q '^events 30000 .* failures 0$' $f || { echo "   $f: incomplete"; echo FAIL >> missing_pass.txt; }; done
