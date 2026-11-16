@@ -30,51 +30,83 @@ extern u32 (*test_fetch)(u32, u32);
 #define FETCHFN   ((u32 (*)(u32, u32))0x780DB461u)  /* record fetch wrapper */
 #endif
 
+#ifdef M3UPLAY_PROBE
+/* diagnostic build (--probe-m3uplay): on any failure after the record fetch,
+ * force the engine launch (class 0) instead of the stock dialog, so the
+ * on-device outcome shows whether the hook chain ran at all */
+#define FALLBACK(row)  return 0
+#else
+#define FALLBACK(row)  return CLASSIFY(row)
+#endif
+
 /* fs op ids (tools/fw/m30fs.h) */
 #define OP_OPEN  5
 #define OP_CLOSE 7
-#define OP_SIZE  9
 #define OP_SEEK  0xB
 #define OP_READ  0xD
 
 static long fs_open(const volatile u8 *name16) { return FS_CALL(FSCTX, (u32)name16, 0, 0, OP_OPEN); }
-static long fs_size(u32 h, u32 *out)       { return FS_CALL(FSCTX, (u32)out, h, 0, OP_SIZE); }
 static long fs_seek(u32 h, u32 pos)        { return FS_CALL(FSCTX, pos, 0, h, OP_SEEK); }
 static long fs_read(u32 h, u8 *b, u32 n)   { return FS_CALL(FSCTX, (u32)b, n, h, OP_READ); }
 static long fs_close(u32 h)                { return FS_CALL(FSCTX, h, 0, 0, OP_CLOSE); }
 
-/* ---- extension check: the row's 4-byte ext field, case-folded ----------
- * OR-ing 0x20 into each byte folds ASCII case; "m3u\0" and "m3u " both
- * fold to "m3u ", so two u32 compares cover M3U/m3u {NUL, space, 8}. */
+static u8 lc8(u8 c) { return (c >= 'A' && c <= 'Z') ? (u8)(c + 0x20) : c; }
 
-static int is_m3u_ext(u32 e)
+/* ---- m3u test on a UTF-16LE name (BOM optional) --------------------------
+ * The file's record name always carries the extension, so test the name
+ * suffix: ".m3u" or ".m3u8", any case. The on-device row struct layout is
+ * not pinned down, so the record name is the witness we rely on. */
+static int name_is_m3u(const volatile u8 *nm)
 {
-    e |= 0x20202020u;
-    return e == 0x2075336Du   /* "m3u " (also "m3u\0") */
-        || e == 0x3875336Du;  /* "m3u8" */
+    u32 i = 0;
+
+    if (nm[0] == 0xFF && nm[1] == 0xFE) {
+        i = 1;                          /* skip the BOM (character index) */
+    }
+    while (nm[2 * i] != 0 || nm[2 * i + 1] != 0) {
+        if (nm[2 * i + 1] != 0 || i >= 0x38) {
+            return 0;                   /* non-ASCII or absurdly long */
+        }
+        i++;
+    }
+    /* i = character length; match the ".m3u" / ".m3u8" suffix */
+    if (i >= 4 && nm[2 * (i - 4)] == '.'
+            && lc8(nm[2 * (i - 3)]) == 'm' && nm[2 * (i - 2)] == '3'
+            && lc8(nm[2 * (i - 1)]) == 'u') {
+        return 1;
+    }
+    return i >= 5 && nm[2 * (i - 5)] == '.'
+        && lc8(nm[2 * (i - 4)]) == 'm' && nm[2 * (i - 3)] == '3'
+        && lc8(nm[2 * (i - 2)]) == 'u' && nm[2 * (i - 1)] == '8';
 }
 
 /* ---- copy the record's name into vstate->name ---------------------------
- * Dir-stream record names are BOM+UTF-16LE. The buffer is pre-zeroed, so
- * a single UTF-16 NUL also terminates safely. Returns 0 on success. */
+ * Dir-stream record names are BOM+UTF-16LE; the BOM is (re-)written even if
+ * the source lacks it, because fs_open expects a BOM name. The buffer is
+ * pre-zeroed, so a single UTF-16 NUL also terminates safely. 0 on success. */
 static int copy_name(const u8 *nm)
 {
-    u32 i;
+    u32 i = 0;
+    u32 j;
     volatile u8 *d = VS->name;
 
-    for (i = 0; i < VS_NAME_MAX; i++) {
-        d[i] = 0;
+    for (j = 0; j < VS_NAME_MAX; j++) {
+        d[j] = 0;
     }
-    if (nm[0] != 0xFF || nm[1] != 0xFE) {
-        return -1;                      /* not a UTF-16 name */
+    if (nm[0] == 0xFF && nm[1] == 0xFE) {
+        i = 1;
     }
-    for (i = 0; i + 1 < VS_NAME_MAX - 2; i += 2) {
-        u8 lo = nm[i], hi = nm[i + 1];
-        d[i] = lo;
-        d[i + 1] = hi;
+    d[0] = 0xFF;
+    d[1] = 0xFE;
+    for (j = 0; 2 + 2 * j + 1 < VS_NAME_MAX; j++) {
+        u8 lo = nm[2 * i];
+        u8 hi = nm[2 * i + 1];
+        d[2 + 2 * j] = lo;
+        d[3 + 2 * j] = hi;
         if (lo == 0 && hi == 0) {
             return 0;                   /* NUL seen; rest stays zeroed */
         }
+        i++;
     }
     return -1;                          /* too long */
 }
@@ -82,14 +114,13 @@ static int copy_name(const u8 *nm)
 /* ---- sector-buffered reader for the m3u parser --------------------------
  * Kernel transfers must start sector-aligned, use whole sectors and not
  * cross a 4 KB boundary (tools/library/index.c rule), so reads go one
- * 512-byte sector at a time; the logical length is clamped to the size
- * from op 9 so EOF padding is never exposed. */
+ * 512-byte sector at a time; the kernel clamps each read to the file size,
+ * and a zero-byte read marks EOF (a 64 KB cap in rd->size bounds the loop). */
 
 struct rd {
     u32 h;
     u32 size;
     u32 pos;        /* logical cursor */
-    u32 kpos;       /* kernel position (avoids redundant seeks) */
     u32 slen;       /* valid bytes in sec */
     u32 spos;       /* cursor within sec */
     u8  sec[512];
@@ -107,17 +138,15 @@ static long rd_read(void *cookie, char *buf, unsigned long n)
             if (off >= r->size) {
                 break;
             }
-            if (r->kpos != off) {
-                if (fs_seek(r->h, off) < 0) {
-                    return got ? (long)got : -1;
-                }
-                r->kpos = off;
-            }
-            if (fs_read(r->h, r->sec, 512) < 0) {
+            long n;
+            if (fs_seek(r->h, off) < 0) {
                 return got ? (long)got : -1;
             }
-            r->kpos = off + 512;
-            r->slen = (off + 512 <= r->size) ? 512 : (r->size - off);
+            n = fs_read(r->h, r->sec, 512);
+            if (n <= 0) {
+                break;              /* EOF: the kernel clamps reads to file size */
+            }
+            r->slen = (u32)n;
             r->spos = r->pos - off;
             if (r->spos >= r->slen) {
                 break;
@@ -147,20 +176,14 @@ static long rd_read(void *cookie, char *buf, unsigned long n)
 static int playlist_open(struct rd *r, struct m3u *m, struct m3u_io *io)
 {
     long h;
-    u32 sz = 0;
 
     h = fs_open(VS->name);
     if (h <= 0) {
         return -1;
     }
-    if (fs_size((u32)h, &sz) < 0 || sz == 0) {
-        fs_close((u32)h);
-        return -1;
-    }
     r->h = (u32)h;
-    r->size = sz;
+    r->size = 0x40000;      /* sanity cap only; reads stop at EOF via fs_read == 0 */
     r->pos = 0;
-    r->kpos = 0xFFFFFFFFu;
     r->slen = 0;
     r->spos = 0;
     io->read = rd_read;
@@ -168,7 +191,7 @@ static int playlist_open(struct rd *r, struct m3u *m, struct m3u_io *io)
     /* empty dir prefix: entries are used as-is, relative to the current
      * dir - which is the playlist's own dir, exactly where the stock
      * engine opens record names from */
-    if (m3u_init(m, io, "") != M3U_OK) {
+    if (m3u_init(m, io, 0) != M3U_OK) {   /* NULL dir prefix: entries used as-is */
         fs_close((u32)h);
         return -1;
     }
@@ -258,25 +281,28 @@ u32 m3uplay_fetch(u32 ctx, u32 idx, u32 a2, u32 x, u32 op)
  * computed by the trampoline). Returns the class for the dispatcher. */
 u32 m3uplay_click(u32 row, u32 idx)
 {
-    u32 ext = *(volatile u32 *)row;
     u32 rec;
     u32 count;
 
     VS->flag = 0;                       /* every file click resets serving */
-    if (!is_m3u_ext(ext)) {
-        return CLASSIFY(row);
-    }
-    FETCHFN(idx, 0);                    /* flag==0: real fetch, publishes the .m3u record */
+    FETCHFN(idx, 0);                    /* flag==0: real fetch, publishes the row's record */
     rec = REC_G;
     if (rec == 0) {
+        return CLASSIFY(row);           /* fetch itself broken: stay safe */
+    }
+#ifndef M3UPLAY_PROBE
+    /* m3u test on the fetched record's name (the row layout is not pinned
+     * down on hardware; the record name always carries the extension) */
+    if (!name_is_m3u(*(const volatile u8 * const *)(rec + 4))) {
         return CLASSIFY(row);
     }
+#endif
     if (copy_name(*(const u8 * const *)(rec + 4)) != 0) {
-        return CLASSIFY(row);
+        FALLBACK(row);
     }
     count = playlist_walk(0, 0);
     if (count == 0xFFFFFFFFu || count == 0) {
-        return CLASSIFY(row);           /* unreadable or empty: stock dialog */
+        FALLBACK(row);                  /* unreadable or empty */
     }
     VS->base = idx;
     VS->count = count;
@@ -286,7 +312,7 @@ u32 m3uplay_click(u32 row, u32 idx)
     if (REC_G == 0) {
         VS->flag = 0;
         VS->magic = 0;
-        return CLASSIFY(row);
+        FALLBACK(row);
     }
     return 0;                           /* class 0: stock engine launch */
 }

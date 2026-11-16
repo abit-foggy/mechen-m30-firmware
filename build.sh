@@ -13,6 +13,10 @@
 #                 repurposed in fat_32n.drv, exfatn.drv and the browser.ap tables)
 #   --no-m3uplay  leave out the M3U play-on-click hook (clicking a .m3u row plays
 #                 its tracks with the stock engine instead of showing a dialog)
+#   --probe-m3uplay  diagnostic build of the play-on-click hook: any failure after
+#                 the record fetch forces the engine launch (class 0) instead of
+#                 the stock "file format not supported" dialog, so the on-device
+#                 outcome shows whether the hook chain ran at all
 #   --no-version  leave the Settings > Information version strings stock
 #   --no-library  leave out the whole-card library (keep the stock 4,000-song limit)
 #   --library-bench  diagnostic: scan 100 files, then time the file operations (tools/library/bench.c)
@@ -28,7 +32,7 @@
 #                                      see docs/versioning.md; metadata lands in OUTDIR/version.json)
 set -euo pipefail
 
-TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 M3UPLAY=1 VERSION_PATCH=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
+TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 M3UPLAY=1 VERSION_PATCH=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS= PROBE=0
 while [ $# -gt 0 ]; do
   case $1 in
     --test) TEST=1; shift ;;
@@ -38,6 +42,7 @@ while [ $# -gt 0 ]; do
     --no-m3uhook) M3UHOOK=0; shift ;;
     --no-m3uvis) M3UVIS=0; shift ;;
     --no-m3uplay) M3UPLAY=0; shift ;;
+    --probe-m3uplay) PROBE=1; shift ;;
     --no-version) VERSION_PATCH=0; shift ;;
     --no-library) LIBRARY=0; shift ;;
     --library-bench) LIB_SRC=bench.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
@@ -59,6 +64,7 @@ STOCK_SHA=6c7e27c8c90c4942664d66a0d6c9f9e48f8d3bc7d2d24223568255e233551258
 CFLAGS="-EL -mabi=32 -march=mips32 -mips16 -Os -G0 -mno-abicalls -fno-pic -ffreestanding -fno-builtin
  -nostdlib -fno-toplevel-reorder -fno-jump-tables -fno-asynchronous-unwind-tables -falign-functions=4 -Wall -Wextra"
 HFLAGS="-EL -mabi=32 -march=mips32 -mno-mips16 -O1 -G0 -mno-abicalls -fno-pic -ffreestanding -fno-builtin -nostdlib"
+PROBE_DEF=; if [ $PROBE = 1 ]; then PROBE_DEF=-DM3UPLAY_PROBE; fi
 
 for t in "${CROSS}gcc" "$ATJ" "$PY"; do command -v "$t" >/dev/null || { echo "missing tool: $t (see README)"; exit 1; }; done
 [ $TEST = 0 ] || command -v "$QEMU" >/dev/null || { echo "missing tool: $QEMU (needed for --test)"; exit 1; }
@@ -166,7 +172,7 @@ if [ $M3UPLAY = 1 ]; then
   # the m3u parser; patch_m3uplay.py asserts the stock bytes before writing
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
-  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
+  "${CROSS}gcc" $CFLAGS $PROBE_DEF -I"$T/m3u" -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay.raw.o m3uplay.o
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3u.raw.o "$T/m3u/m3u.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3u.raw.o m3u.o
@@ -187,7 +193,7 @@ if [ $VERSION_PATCH = 1 ]; then
   CHANNEL=${BUILD_CHANNEL:-dev}
   # the config string is folded into the dev build ID, so every build option that
   # changes the firmware changes the identifier shown on the device
-  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS m3uplay=$M3UPLAY lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none}"
+  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS m3uplay=$M3UPLAY probe=$PROBE lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none}"
   echo "== setting.ap: Information screen version (channel $CHANNEL)"
   VMETA=$("$PY" -I "$T/version/version.py" --channel "$CHANNEL" --config "$CONFIG" --out "$OUT/version.json") || {
     echo "   channel $CHANNEL rejected by tools/version/version.py (nightly/release need a clean, correctly tagged tree)"; exit 2; }
