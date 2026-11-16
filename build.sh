@@ -11,6 +11,8 @@
 #   --no-m3uhook  leave out the M3U/M3U8 selection hook in the file browser
 #   --no-m3uvis   leave out the M3U/M3U8 visibility slots (AIF/MP2/POS/AA ext slots
 #                 repurposed in fat_32n.drv, exfatn.drv and the browser.ap tables)
+#   --no-m3uplay  leave out the M3U play-on-click hook (clicking a .m3u row plays
+#                 its tracks with the stock engine instead of showing a dialog)
 #   --no-version  leave the Settings > Information version strings stock
 #   --no-library  leave out the whole-card library (keep the stock 4,000-song limit)
 #   --library-bench  diagnostic: scan 100 files, then time the file operations (tools/library/bench.c)
@@ -26,7 +28,7 @@
 #                                      see docs/versioning.md; metadata lands in OUTDIR/version.json)
 set -euo pipefail
 
-TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 VERSION_PATCH=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
+TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 M3UPLAY=1 VERSION_PATCH=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS=
 while [ $# -gt 0 ]; do
   case $1 in
     --test) TEST=1; shift ;;
@@ -35,6 +37,7 @@ while [ $# -gt 0 ]; do
     --no-keys) KEYS=0; shift ;;
     --no-m3uhook) M3UHOOK=0; shift ;;
     --no-m3uvis) M3UVIS=0; shift ;;
+    --no-m3uplay) M3UPLAY=0; shift ;;
     --no-version) VERSION_PATCH=0; shift ;;
     --no-library) LIBRARY=0; shift ;;
     --library-bench) LIB_SRC=bench.c; LIB_PREALLOC=$LIB_MAX; LIB_MAX=100; shift ;;
@@ -155,6 +158,28 @@ if [ $M3UHOOK = 1 ]; then
   # the stock wrapper bytes and the zero bank tail before writing
   "$PY" -I "$T/m3u/patch_m3uhook.py" browser.ap browser.ap m3uhook.bin 0x$HOOK_ADDR 0x$SLOT_ADDR
 fi
+
+if [ $M3UPLAY = 1 ]; then
+  echo "== browser.ap: M3U play-on-click hook (Phase D/E)"
+  # one blob in the bank 0x400D4C00 zero tail (region 0x4, reachable by the
+  # direct jal at the click site): trampoline first, then the C handler and
+  # the m3u parser; patch_m3uplay.py asserts the stock bytes before writing
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay.raw.o m3uplay.o
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3u.raw.o "$T/m3u/m3u.c"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3u.raw.o m3u.o
+  printf 'SECTIONS { . = 0x400D4CD0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3uplay.ld
+  printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3uplay.ld
+  "${CROSS}ld" -EL -m elf32ltsmip -T m3uplay.ld -e m3uplay_tramp -o m3uplay.elf m3uplay_tramp.o m3uplay.o m3u.o
+  [ -z "$("${CROSS}size" -A m3uplay.elf | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "m3uplay: has writable data, which a blob can't carry"; exit 1; }
+  "${CROSS}objcopy" -O binary -j .text m3uplay.elf m3uplay.bin
+  [ "$(sym m3uplay.elf m3uplay_tramp)" = "400d4cd0" ] || { echo "m3uplay_tramp is not at 0x400D4CD0: $(sym m3uplay.elf m3uplay_tramp)"; exit 1; }
+  [ "$(stat -c %s m3uplay.bin)" -le $((0x730)) ] || { echo "m3uplay blob too big for the bank tail: $(stat -c %s m3uplay.bin) > 0x730"; exit 1; }
+  "$PY" -I "$T/m3u/patch_m3uplay.py" browser.ap browser.ap m3uplay.bin 0x400d4cd0 0x$(sym m3uplay.elf m3uplay_fetch) | sed 's/^/   /'
+  echo "   blob $(stat -c %s m3uplay.bin) bytes at 0x400D4CD0, m3uplay_fetch 0x$(sym m3uplay.elf m3uplay_fetch)"
+fi
 PATCHED="mengine.ap browser.ap music.ap"
 [ $M3UVIS = 1 ] && PATCHED="$PATCHED fat_32n.drv exfatn.drv"
 
@@ -162,7 +187,7 @@ if [ $VERSION_PATCH = 1 ]; then
   CHANNEL=${BUILD_CHANNEL:-dev}
   # the config string is folded into the dev build ID, so every build option that
   # changes the firmware changes the identifier shown on the device
-  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none}"
+  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS m3uplay=$M3UPLAY lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none}"
   echo "== setting.ap: Information screen version (channel $CHANNEL)"
   VMETA=$("$PY" -I "$T/version/version.py" --channel "$CHANNEL" --config "$CONFIG" --out "$OUT/version.json") || {
     echo "   channel $CHANNEL rejected by tools/version/version.py (nightly/release need a clean, correctly tagged tree)"; exit 2; }
@@ -317,6 +342,12 @@ if [ $TEST = 1 ]; then
       CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/m3uhooktest.py" > test_m3uhook.txt 2>&1 || true
     grep -q 'm3uhooktest: OK' test_m3uhook.txt && echo 'ALL PASS' >> test_m3uhook.txt || true
     echo "   m3uhook:  $(tail -n 1 test_m3uhook.txt)"
+  fi
+  if [ $M3UPLAY = 1 ]; then
+    M30_PLAY_BIN=$PWD/m3uplay.bin M30_PLAY_ELF=$PWD/m3uplay.elf \
+      CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/test_m3uplay.py" "$F/browser.ap" browser.ap > test_m3uplay.txt 2>&1 || true
+    grep -q 'test_m3uplay: OK' test_m3uplay.txt && echo 'ALL PASS' >> test_m3uplay.txt || true
+    echo "   m3uplay:  $(grep -c '^PASS' test_m3uplay.txt) checks, $(tail -n 1 test_m3uplay.txt)"
   fi
   if [ $VERSION_PATCH = 1 ]; then
     "$PY" -I "$T/version/test_version.py" "$F/setting.ap" setting.ap "$VERSION" "$IDENT" "$CHANNEL" > test_version.txt 2>&1 || true
