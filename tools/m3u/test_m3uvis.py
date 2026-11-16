@@ -27,10 +27,14 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-MUSIC_MASK = 0x7E190EA0          # bitmap table [0] at 0x40D1531C (stock)
-NEW_MASK = MUSIC_MASK | 0x100 | 0x1000   # bits 8 and 12 added by the patch
+MUSIC_MASK = 0x7E190EA0          # stock music mask (list filter + classifier class[0] stock)
+NEW_MASK = MUSIC_MASK | 0x100 | 0x1000   # bits 8 and 12 added by the patch (list filter only)
 DRV_TABLE, EXFAT_TABLE, LOC_TABLE, LOC_BANK_FO, RES_TABLE = 0x780, 0x7F8, 0x49C, 0x12500, 0xC188
-MASK_SITES = [0xF98, 0x17FC, 0xBD00, 0x12A1C]
+MASK_SITES = [0xF98, 0x17FC, 0xBD00]     # list-filter mask copies (0x12a1c is the classifier's, see below)
+CLASS_MASK = 0x51C               # bank 0x40D14E00 + 0x51C = file 0x12a1c: classifier class masks
+CLASS0, CLASS1 = 0x7E190EA0, 0x00003000
+NEW_CLASS0 = CLASS0 & ~0x1520    # clear bits 5,8,10,12 (slots 26/23/21/19 = M3U/m3u/M3U8/m3u8)
+NEW_CLASS1 = CLASS1 & ~0x1000    # clear bit 12 (slot 19 = m3u8)
 
 DRV_SLOTS = [(25, b"M3U\x00"), (20, b"M3U8"), (22, b"m3u\x00"), (18, b"m3u8")]
 LOC_SLOTS = [(26, b"M3U\x00"), (21, b"M3U8"), (23, b"m3u\x00"), (19, b"m3u8")]
@@ -96,20 +100,22 @@ def main(stock_drv, stock_brow, stock_exfat=None):
     sites_d = [(DRV_TABLE + 4 * s, new) for s, new in DRV_SLOTS]
     sites_b = ([(LOC_BANK_FO + LOC_TABLE + 4 * s, new) for s, new in LOC_SLOTS] +
                [(RES_TABLE + 4 * s, new) for s, new in RES_SLOTS] +
-               [(off, struct.pack("<I", NEW_MASK)) for off in MASK_SITES])
-    ok_d = all(pd[off:off + 4] == new for off, new in sites_d) and all(
+               [(off, struct.pack("<I", NEW_MASK)) for off in MASK_SITES] +
+               [(LOC_BANK_FO + CLASS_MASK, struct.pack("<II", NEW_CLASS0, NEW_CLASS1))])
+    ok_d = all(pd[off:off + len(new)] == new for off, new in sites_d) and all(
         sd[i] == pd[i] for i in range(len(sd))
-        if not any(off <= i < off + 4 for off, _ in sites_d))
-    ok_b = all(pb[off:off + 4] == new for off, new in sites_b) and all(
+        if not any(off <= i < off + len(new) for off, new in sites_d))
+    ok_b = all(pb[off:off + len(new)] == new for off, new in sites_b) and all(
         sb[i] == pb[i] for i in range(len(sb))
-        if not any(off <= i < off + 4 for off, _ in sites_b))
+        if not any(off <= i < off + len(new) for off, new in sites_b))
     check(ok_d, "driver: slots 25/20/22/18 = M3U/M3U8/m3u/m3u8, every other byte stock")
-    check(ok_b, "browser: local 26/21/23/19 + resident 25/20/18 + 4 mask words patched, rest stock")
+    check(ok_b, "browser: local 26/21/23/19 + resident 25/20/18 + 3 list-mask words"
+               " + class masks patched, rest stock")
     if se is not None:
         sites_e = [(EXFAT_TABLE + 4 * s, new) for s, new in DRV_SLOTS]
-        ok_e = all(pe[off:off + 4] == new for off, new in sites_e) and all(
+        ok_e = all(pe[off:off + len(new)] == new for off, new in sites_e) and all(
             se[i] == pe[i] for i in range(len(se))
-            if not any(off <= i < off + 4 for off, _ in sites_e))
+            if not any(off <= i < off + len(new) for off, new in sites_e))
         check(ok_e, "exfatn.drv (the live driver on the exFAT card): same 4 slots at 0x7f8, rest stock")
 
     drv_tab = pd[DRV_TABLE:DRV_TABLE + 31 * 4]
@@ -179,6 +185,43 @@ def main(stock_drv, stock_brow, stock_exfat=None):
           "stock driver table does not admit .m3u")
     check(not classify(sloc_tab, MUSIC_MASK, struct.unpack("<I", b"M3U\x00")[0], 31),
           "stock browser table does not admit .M3U")
+
+    # 5. the CLICK path: classifier 0x40D14E00 over the local table + class
+    #    masks. Model: class i in 0..1; slot j checked iff bit(31-j) set in
+    #    classmask[i]; ROM compare 0xBFC16A21(row, slot, 3, 5) is 3-byte and
+    #    case-insensitive in practice (hardware: lowercase idk.m3u classified
+    #    as audio via slot 26 "M3U"). No match -> class 5.
+    def click_class(tab, c0, c1, ext4):
+        e3 = ext4[:3].lower()
+        for i, mask in enumerate((c0, c1)):
+            for j in range(32):
+                if not (mask >> (31 - j)) & 1:
+                    continue
+                raw = tab[4 * j:4 * j + 4]
+                if b'*' in raw or raw[:3] == b'\x00\x00\x00':
+                    continue          # wildcard / empty slots never match literally
+                if raw[:3].lower() == e3:
+                    return i
+        return 5
+
+    def status(cls, brow_bytes):
+        return struct.unpack_from("<H", brow_bytes, LOC_BANK_FO + 0x53C + 2 * cls)[0]
+
+    sc0, sc1 = struct.unpack_from("<II", sb, LOC_BANK_FO + CLASS_MASK)
+    check((sc0, sc1) == (CLASS0, CLASS1), "stock class masks are 0x%x/0x%x as expected" % (CLASS0, CLASS1))
+    nc0, nc1 = struct.unpack_from("<II", pb, LOC_BANK_FO + CLASS_MASK)
+    check((nc0, nc1) == (NEW_CLASS0, NEW_CLASS1),
+          "patched class masks 0x%x/0x%x (bits 5,10,12 cleared)" % (NEW_CLASS0, NEW_CLASS1))
+    for ext, msg in [(b"m3u\x00", ".m3u"), (b"M3U\x00", ".M3U"), (b"m3u8", ".m3u8"), (b"M3U8", ".M3U8")]:
+        check(click_class(loc_tab, NEW_MASK, sc1, ext) == 0,
+              "as-shipped click: %s classified as class 0 (audio) -> engine launch (the hardware bug)" % msg)
+        check(click_class(loc_tab, nc0, nc1, ext) == 5,
+              "patched click: %s classified as class 5 -> status 0 -> stock dialog, no engine" % msg)
+    check(click_class(loc_tab, nc0, nc1, b"MP3\x00") == 0, "patched click: .mp3 still class 0 (audio)")
+    check(click_class(loc_tab, nc0, nc1, b"FLA\x00".ljust(4, b"\x00")) == 0, "patched click: .flac still class 0")
+    check(click_class(loc_tab, nc0, nc1, b"AAX\x00") == 1, "patched click: .aax still class 1")
+    check(status(5, pb) == 0 and status(0, pb) == 0x8001 and status(1, pb) == 0x8002,
+          "status table: class 5 -> 0 (dialog), class 0/1 -> 0x8001/0x8002 (engine)")
 
     shutil.rmtree(work, ignore_errors=True)
     print("test_m3uvis: %s" % ("OK" if rc == 0 else "FAILED"))
