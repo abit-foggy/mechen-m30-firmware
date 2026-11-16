@@ -64,12 +64,14 @@ that only the two halfwords and the two slots changed. The re-encoded
 instructions were verified by disassembling the patched bank in IDA Pro:
 `la $v0, "0.1.0-dev"` / `la $v0, "d3e852eb"`.
 
-The third row's label ("修改时间", "modify time") lives in `setting.sty` as the
-Information format string (pair 107 of the Simplified and Traditional groups).
-`tools/version/patch_label.py` rewrites it to `build:` so the row reads
-`build:[<identifier>]`; the longer string shifts the .sty content tail inside
-the fixed-size file (all table offsets fixed up, size unchanged so repack still
-accepts it), verified by `tools/version/test_label.py` (13 checks).
+The third row's label ("Modify time:", plus CJK variants) lives in
+`setting.sty` as the Information format string (pair 107 of each of the 28
+language groups; the 23 groups that use the English label, including the
+English UI group, are the ones that matter). `tools/version/patch_label.py`
+rewrites it in place to the space-padded `Build ID:` (same 12 UTF-16 units,
+so no shifting: file size, content length, XML offset and every table stay
+byte-identical), so the row reads `Build ID:   [<identifier>]`; verified by
+`tools/version/test_label.py` (14 checks).
 
 A successful repack does **not** prove the screen renders correctly — that is
 what the hardware checklist below is for.
