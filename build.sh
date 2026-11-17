@@ -174,7 +174,7 @@ if [ $M3UPLAY = 1 ]; then
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
   "${CROSS}gcc" $CFLAGS $PROBE_DEF -I"$T/m3u" -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay.raw.o m3uplay.o
-  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3u.raw.o "$T/m3u/m3u.c"
+  "${CROSS}gcc" $CFLAGS -DM3UPLAY_NO_DIR -I"$T/m3u" -c -o m3u.raw.o "$T/m3u/m3u.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3u.raw.o m3u.o
   printf 'SECTIONS { . = 0x400D4CD0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3uplay.ld
   printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3uplay.ld

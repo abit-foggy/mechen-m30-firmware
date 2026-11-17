@@ -25,6 +25,9 @@ int m3u_init(struct m3u *m, const struct m3u_io *io, const char *dir)
     m->bom_checked = 0;
 
     m->dir_len = 0;
+#ifndef M3UPLAY_NO_DIR
+    /* the play-on-click blob (freestanding, size-critical) never uses a dir
+     * prefix and compiles with -DM3UPLAY_NO_DIR to drop this copy loop */
     if (dir) {
         while (dir[m->dir_len]) {
             if (m->dir_len >= M3U_DIR_MAX - 1) {
@@ -42,14 +45,18 @@ int m3u_init(struct m3u *m, const struct m3u_io *io, const char *dir)
         }
         m->dir[m->dir_len++] = '/';
     }
+#endif
     m->dir[m->dir_len] = 0;
+    (void)dir;
     return M3U_OK;
 }
 
+#ifndef M3UPLAY_NO_DIR
 unsigned m3u_count(const struct m3u *m)
 {
     return m->entries;
 }
+#endif
 
 /* Pull more bytes in. Compacts the unconsumed tail to the front of the buffer.
  * Returns 0 on success (bytes available, or clean EOF), M3U_ERR_IO on failure. */

@@ -31,9 +31,16 @@
  * Record layout (from the dir-stream decode): +0 attr byte (0 = file),
  * +4 name string pointer (BOM FF FE + UTF-16LE + NUL), records are 0x100
  * bytes. The engine (music.ap 0x40054FAC) registers *0x9FC1573C and
- * *(record+4) with module 0x05 and opens the name - relative names resolve
- * in the browser's current dir, i.e. the playlist's own dir, which is where
- * the m3u's entries are relative to.
+ * *(record+4) with module 0x05 and opens the name against the fs cwd.
+ *
+ * Paths: neither fs driver supports ".." in a path (no such code in
+ * exfatn.drv/fat_32n.drv, and exFAT has no dot entries), so ../-relative
+ * playlist entries cannot be opened from the playlist's own dir. Instead the
+ * click path cds the fs to the drive root (the stock library's
+ * fs_cd(ctx, ':', ...) op-8 pattern) and serves entries with one leading
+ * "../" stripped. The playlist file itself is opened BEFORE the cd and its
+ * handle kept in vstate, because after the cd its relative name is no longer
+ * reachable.
  */
 #ifndef M3UPLAY_H
 #define M3UPLAY_H
@@ -54,7 +61,17 @@ struct vstate {
     u32 count;                  /* entries in the playlist */
     u8  name[VS_NAME_MAX];      /* the .m3u's fs-open name (BOM+UTF-16LE) */
     u8  rec[0x100];             /* the virtual dir record served to the engine */
+    u32 plh;                    /* persistent playlist handle (open across
+                                 * serves; survives the cwd change). This last
+                                 * word fills the zero run exactly:
+                                 * 16 + 0x70 + 0x100 + 4 = 0x184 bytes. */
 };
+
+/* The zero run has no room beyond plh, so the root-mode flag overlays
+ * name[4..7]: the name is dead once the playlist file is open (serves
+ * re-read the file through the handle, never by name), and VS_MODE is only
+ * latched during walks that happen after that. */
+#define VS_MODE  (*(volatile u32 *)&VS->name[4])    /* 1 = entries ../-relative */
 
 /* Fixed addresses in the stock firmware (see docs/reverse-engineering.md).
  * The test build (M3UPLAY_TEST) routes these through pointers the harness

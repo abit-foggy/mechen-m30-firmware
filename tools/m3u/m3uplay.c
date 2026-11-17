@@ -34,28 +34,26 @@ extern u32 (*test_fetch)(u32, u32);
 /* diagnostic build (--probe-m3uplay): on any failure after the record fetch,
  * force the engine launch (class 0) instead of the stock dialog, so the
  * on-device outcome shows whether the hook chain ran at all */
-#define FALLBACK(row)  return 0
+static u32 fallback(u32 row) { (void)row; return 0; }
 #else
-#define FALLBACK(row)  return CLASSIFY(row)
+static u32 fallback(u32 row) { return CLASSIFY(row); }
 #endif
+#define FALLBACK(row)  return fallback(row)
 
 /* fs op ids (tools/fw/m30fs.h) */
 #define OP_OPEN  5
 #define OP_CLOSE 7
+#define OP_CHDIR 8
 #define OP_SEEK  0xB
 #define OP_READ  0xD
 
 static long fs_open(const volatile u8 *name16) { return FS_CALL(FSCTX, (u32)name16, 0, 0, OP_OPEN); }
-static long fs_seek(u32 h, u32 pos)        { return FS_CALL(FSCTX, pos, 0, h, OP_SEEK); }
-static long fs_read(u32 h, u8 *b, u32 n)   { return FS_CALL(FSCTX, (u32)b, n, h, OP_READ); }
-static long fs_close(u32 h)                { return FS_CALL(FSCTX, h, 0, 0, OP_CLOSE); }
-
-static u8 lc8(u8 c) { return (c >= 'A' && c <= 'Z') ? (u8)(c + 0x20) : c; }
 
 /* ---- m3u test on a UTF-16LE name (BOM optional) --------------------------
  * The file's record name always carries the extension, so test the name
- * suffix: ".m3u" or ".m3u8", any case. The on-device row struct layout is
- * not pinned down, so the record name is the witness we rely on. */
+ * suffix: ".m3u" or ".m3u8", any case (ASCII letters fold via | 0x20). The
+ * on-device row struct layout is not pinned down, so the record name is the
+ * witness we rely on. */
 static int name_is_m3u(const volatile u8 *nm)
 {
     u32 i = 0;
@@ -69,44 +67,42 @@ static int name_is_m3u(const volatile u8 *nm)
         }
         i++;
     }
-    /* i = character length; match the ".m3u" / ".m3u8" suffix */
-    if (i >= 4 && nm[2 * (i - 4)] == '.'
-            && lc8(nm[2 * (i - 3)]) == 'm' && nm[2 * (i - 2)] == '3'
-            && lc8(nm[2 * (i - 1)]) == 'u') {
-        return 1;
-    }
-    return i >= 5 && nm[2 * (i - 5)] == '.'
-        && lc8(nm[2 * (i - 4)]) == 'm' && nm[2 * (i - 3)] == '3'
-        && lc8(nm[2 * (i - 2)]) == 'u' && nm[2 * (i - 1)] == '8';
+    /* match the ".m3u" / ".m3u8" suffix from the NUL anchor ('.', '3', '8'
+     * are fold-invariant, so | 0x20 on every char is safe) */
+    nm += 2 * i;
+    return (nm[-8] == '.' && (nm[-6] | 0x20) == 'm' && nm[-4] == '3'
+                && (nm[-2] | 0x20) == 'u')
+        || (i >= 5 && nm[-10] == '.' && (nm[-8] | 0x20) == 'm'
+                && nm[-6] == '3' && (nm[-4] | 0x20) == 'u' && nm[-2] == '8');
 }
 
 /* ---- copy the record's name into vstate->name ---------------------------
  * Dir-stream record names are BOM+UTF-16LE; the BOM is (re-)written even if
- * the source lacks it, because fs_open expects a BOM name. The buffer is
- * pre-zeroed, so a single UTF-16 NUL also terminates safely. 0 on success. */
+ * the source lacks it, because fs_open expects a BOM name. No pre-zeroing:
+ * the UTF-16 double NUL written here terminates the name for fs_open, and
+ * bytes beyond it are never read (only plh/mode overlay name[0..7] later). */
 static int copy_name(const u8 *nm)
 {
-    u32 i = 0;
-    u32 j;
+    const u8 *s = nm;
     volatile u8 *d = VS->name;
+    u32 j;
 
-    for (j = 0; j < VS_NAME_MAX; j++) {
-        d[j] = 0;
-    }
-    if (nm[0] == 0xFF && nm[1] == 0xFE) {
-        i = 1;
+    if (s[0] == 0xFF && s[1] == 0xFE) {
+        s += 2;                         /* source already has the BOM */
     }
     d[0] = 0xFF;
     d[1] = 0xFE;
+    d += 2;
     for (j = 0; 2 + 2 * j + 1 < VS_NAME_MAX; j++) {
-        u8 lo = nm[2 * i];
-        u8 hi = nm[2 * i + 1];
-        d[2 + 2 * j] = lo;
-        d[3 + 2 * j] = hi;
+        u8 lo = s[0];
+        u8 hi = s[1];
+        d[0] = lo;
+        d[1] = hi;
         if (lo == 0 && hi == 0) {
-            return 0;                   /* NUL seen; rest stays zeroed */
+            return 0;                   /* NUL terminates; stale bytes unread */
         }
-        i++;
+        s += 2;
+        d += 2;
     }
     return -1;                          /* too long */
 }
@@ -135,18 +131,18 @@ static long rd_read(void *cookie, char *buf, unsigned long n)
         u32 k;
         if (r->spos >= r->slen) {
             u32 off = r->pos & ~511u;
+            long got2;
             if (off >= r->size) {
                 break;
             }
-            long n;
-            if (fs_seek(r->h, off) < 0) {
-                return got ? (long)got : -1;
+            if (FS_CALL(FSCTX, off, 0, r->h, OP_SEEK) < 0) {
+                return -1;
             }
-            n = fs_read(r->h, r->sec, 512);
-            if (n <= 0) {
+            got2 = FS_CALL(FSCTX, (u32)r->sec, 512, r->h, OP_READ);
+            if (got2 <= 0) {
                 break;              /* EOF: the kernel clamps reads to file size */
             }
-            r->slen = (u32)n;
+            r->slen = (u32)got2;
             r->spos = r->pos - off;
             if (r->spos >= r->slen) {
                 break;
@@ -173,44 +169,62 @@ static long rd_read(void *cookie, char *buf, unsigned long n)
 
 /* ---- playlist access ---------------------------------------------------- */
 
-static int playlist_open(struct rd *r, struct m3u *m, struct m3u_io *io)
+/* Open the playlist, or reuse the handle persisted in vstate. The handle is
+ * kept open across serves: after the cd to the root drive the playlist's
+ * relative name is no longer reachable, and re-parsing per serve only needs
+ * a fresh rd cursor over the same handle. The click path closes a previous
+ * playlist's handle before opening a new one. Returns 0 on success. */
+static int pl_open(u32 *hout)
 {
     long h;
 
+    if (VS->plh) {
+        *hout = VS->plh;
+        return 0;
+    }
     h = fs_open(VS->name);
     if (h <= 0) {
         return -1;
     }
-    r->h = (u32)h;
-    r->size = 0x40000;      /* sanity cap only; reads stop at EOF via fs_read == 0 */
-    r->pos = 0;
-    r->slen = 0;
-    r->spos = 0;
-    io->read = rd_read;
-    io->cookie = r;
-    /* empty dir prefix: entries are used as-is, relative to the current
-     * dir - which is the playlist's own dir, exactly where the stock
-     * engine opens record names from */
-    if (m3u_init(m, io, 0) != M3U_OK) {   /* NULL dir prefix: entries used as-is */
-        fs_close((u32)h);
-        return -1;
-    }
+    VS->plh = (u32)h;               /* the name is dead from here on */
+    *hout = (u32)h;
     return 0;
 }
 
-/* Walk the playlist in VS->name. With rec == 0, count all entries and
- * return the count (0xFFFFFFFF on any error). With rec != 0, build the
- * 0x100-byte virtual dir record for entry `want` into rec and return 0,
- * or 0xFFFFFFFF if the entry does not exist or is too long. */
+/* Release the persistent playlist handle (a no-op when none is open). */
+static void pl_close(void)
+{
+    if (VS->plh) {
+        FS_CALL(FSCTX, VS->plh, 0, 0, OP_CLOSE);    /* fs_close, inlined */
+        VS->plh = 0;
+    }
+}
+
+/* Walk the playlist through the persistent handle. With rec == 0, count all
+ * entries and return the count (0xFFFFFFFF on any error), also latching
+ * VS_MODE from the first entry. With rec != 0, build the 0x100-byte virtual
+ * dir record for entry `want` into rec and return 0, or 0xFFFFFFFF if the
+ * entry does not exist or is too long. Never closes the handle. */
 static u32 playlist_walk(u32 want, u8 *rec)
 {
     struct rd r;
     struct m3u m;
     struct m3u_io io;
+    u32 h;
     u32 i = 0;
     int rc;
 
-    if (playlist_open(&r, &m, &io) != 0) {
+    if (pl_open(&h) != 0) {
+        return 0xFFFFFFFFu;
+    }
+    r.h = h;
+    r.size = 0x40000;      /* sanity cap only; reads stop at EOF via fs_read == 0 */
+    r.pos = 0;
+    r.slen = 0;
+    r.spos = 0;
+    io.read = rd_read;
+    io.cookie = &r;
+    if (m3u_init(&m, &io, 0) != M3U_OK) {
         return 0xFFFFFFFFu;
     }
     for (;;) {
@@ -219,61 +233,69 @@ static u32 playlist_walk(u32 want, u8 *rec)
             break;
         }
         if (rc < 0) {
-            fs_close(r.h);
             return 0xFFFFFFFFu;
         }
-        if (rec != 0 && i == want) {
+        if (rec == 0) {
+            if (i == 0) {
+                VS_MODE = (m.line_len >= 3 && m.line[0] == '.' && m.line[1] == '.'
+                           && m.line[2] == '/') ? 1u : 0u;
+            }
+        } else if (i == want) {
+            const u8 *line = (const u8 *)m.line;
+            u32 len = m.line_len;
             u32 k;
             volatile u8 *rp = (volatile u8 *)rec;
             volatile u8 *nm;
-            for (k = 0; k < 0x100; k++) {
-                rp[k] = 0;
+            if (VS_MODE && len >= 3 && line[0] == '.' && line[1] == '.'
+                    && line[2] == '/') {
+                line += 3;              /* the fs cwd is the drive root now */
+                len -= 3;
             }
-            *(volatile u32 *)(rec + 4) = (u32)(rec + 0x10);  /* name ptr */
-            if (m.line_len > (0x100 - 0x10 - 4) / 2) {
-                fs_close(r.h);
+            if (len > (0x100 - 0x10 - 4) / 2) {
                 return 0xFFFFFFFFu;
             }
+            for (k = 0; k < 0x100 / 4; k++) {
+                ((volatile u32 *)rp)[k] = 0;
+            }
+            *(volatile u32 *)(rec + 4) = (u32)(rec + 0x10);  /* name ptr */
             nm = (volatile u8 *)(rec + 0x10);
             nm[0] = 0xFF;
             nm[1] = 0xFE;
-            for (k = 0; k < m.line_len; k++) {
-                nm[2 + 2 * k] = (u8)m.line[k];
+            for (k = 0; k < len; k++) {
+                nm[2 + 2 * k] = line[k];
                 nm[3 + 2 * k] = 0;
             }
-            nm[2 + 2 * m.line_len] = 0;             /* UTF-16 double NUL */
-            nm[3 + 2 * m.line_len] = 0;
-            nm[4 + 2 * m.line_len] = 0;
-            nm[5 + 2 * m.line_len] = 0;
-            fs_close(r.h);
+            *(volatile u32 *)&nm[2 + 2 * len] = 0;   /* UTF-16 double NUL */
             return 0;
         }
         i++;
     }
-    fs_close(r.h);
     return rec ? 0xFFFFFFFFu : i;
 }
 
 /* ---- the record-fetch hook (pool word of 0x780DB460) --------------------
  * Called with the fs stub's arguments: (ctx, zeb(idx), 0, x, op). The stock
- * wrapper publishes the return value to 0x9FC1573C. */
+ * wrapper publishes the return value to 0x9FC1573C. One passthrough exit at
+ * the end keeps the blob's constant pools small. */
 u32 m3uplay_fetch(u32 ctx, u32 idx, u32 a2, u32 x, u32 op)
 {
-    if (op != 1 || VS->magic != M3UPLAY_MAGIC || VS->flag != 1) {
-        return (u32)FS_CALL(ctx, idx, a2, x, op);   /* stock passthrough */
+    if (op == 1 && VS->magic == M3UPLAY_MAGIC && VS->flag == 1) {
+        idx &= 0xFF;
+        if (idx < 0x80) {               /* markers behave exactly as stock */
+            if (idx < VS->base || idx >= VS->base + VS->count) {
+                /* A child fetch outside the playlist means the browser is
+                 * listing (or has left) the folder: stop serving. */
+                VS->flag = 0;
+                VS->magic = 0;
+            } else {
+                if (playlist_walk(idx - VS->base, (u8 *)VS->rec) != 0) {
+                    return 0;   /* read/parse failure: end-of-list flag */
+                }
+                return (u32)&VS->rec[0];
+            }
+        }
     }
-    idx &= 0xFF;
-    if (idx >= 0x80) {
-        /* parent/child markers: behave exactly as stock */
-        return (u32)FS_CALL(ctx, idx, a2, x, op);
-    }
-    if (idx < VS->base || idx >= VS->base + VS->count) {
-        return (u32)FS_CALL(ctx, idx, a2, x, op);   /* outside the playlist */
-    }
-    if (playlist_walk(idx - VS->base, (u8 *)VS->rec) != 0) {
-        return 0;   /* read/parse failure: the wrapper flags end-of-list */
-    }
-    return (u32)&VS->rec[0];
+    return (u32)FS_CALL(ctx, idx, a2, x, op);
 }
 
 /* ---- the click handler (reached via m3uplay_tramp) ----------------------
@@ -284,6 +306,7 @@ u32 m3uplay_click(u32 row, u32 idx)
     u32 rec;
     u32 count;
 
+    pl_close();                         /* a playlist left open: release it */
     VS->flag = 0;                       /* every file click resets serving */
     FETCHFN(idx, 0);                    /* flag==0: real fetch, publishes the row's record */
     rec = REC_G;
@@ -294,20 +317,26 @@ u32 m3uplay_click(u32 row, u32 idx)
     /* m3u test on the fetched record's name (the row layout is not pinned
      * down on hardware; the record name always carries the extension) */
     if (!name_is_m3u(*(const volatile u8 * const *)(rec + 4))) {
-        return CLASSIFY(row);
+        return fallback(row);
     }
 #endif
     if (copy_name(*(const u8 * const *)(rec + 4)) != 0) {
         FALLBACK(row);
     }
-    count = playlist_walk(0, 0);
+    count = playlist_walk(0, 0);        /* opens the m3u, cwd still its dir */
     if (count == 0xFFFFFFFFu || count == 0) {
+        pl_close();                     /* open failed or empty: release it */
         FALLBACK(row);                  /* unreadable or empty */
     }
     VS->base = idx;
     VS->count = count;
     VS->magic = M3UPLAY_MAGIC;
     VS->flag = 1;
+    if (VS_MODE) {
+        /* Entries are ../-relative and the fs has no '..' support: play from
+         * the drive root (the stock library's fs_cd(ctx, ':', ...) op 8). */
+        FS_CALL(FSCTX, 0x3Au /* ':' = root drive */, 0, 0, OP_CHDIR);
+    }
     FETCHFN(idx, 0);                    /* flag==1: hook serves track 0 */
     if (REC_G == 0) {
         VS->flag = 0;

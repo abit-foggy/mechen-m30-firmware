@@ -279,8 +279,9 @@ int main(void)
     check(REC_G == (u32)(unsigned long)&VS->rec[0], "track 0 record published to REC_G");
     check(VS->rec[0] == 0 && *(volatile u32 *)(VS->rec + 4) == (u32)(unsigned long)(VS->rec + 0x10),
           "record layout: attr 0, name ptr -> rec+0x10");
-    check(rec_name_is(VS->rec, "../Music/song one.mp3"), "track 0 name in record");
-    check(name_eq(VS->name, name_idk), "vstate name = the .m3u's UTF-16 name");
+    check(rec_name_is(VS->rec, "Music/song one.mp3"), "track 0 name in record (../ stripped)");
+    check(VS->plh == 0x100, "playlist handle kept open in vstate");
+    check(*(volatile u32 *)(VS->name + 4) == 1, "root mode latched (first entry ../)");
 
     /* 2: next track through the wrapper */
     v = wrap_fetch(3, 0);
