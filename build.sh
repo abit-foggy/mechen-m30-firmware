@@ -166,25 +166,36 @@ if [ $M3UHOOK = 1 ]; then
 fi
 
 if [ $M3UPLAY = 1 ]; then
-  echo "== browser.ap: M3U play-on-click hook (Phase D/E)"
-  # one blob in the bank 0x400D4C00 zero tail (region 0x4, reachable by the
-  # direct jal at the click site): trampoline first, then the C handler and
-  # the m3u parser; patch_m3uplay.py asserts the stock bytes before writing
+  echo "== browser.ap + mengine.ap: M3U play-on-click + track stepper"
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
   "${CROSS}gcc" $CFLAGS $PROBE_DEF -I"$T/m3u" -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay.raw.o m3uplay.o
-  "${CROSS}gcc" $CFLAGS -DM3UPLAY_NO_DIR -I"$T/m3u" -c -o m3u.raw.o "$T/m3u/m3u.c"
-  "${CROSS}objcopy" --set-section-alignment .text=4 m3u.raw.o m3u.o
   printf 'SECTIONS { . = 0x400D4CD0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3uplay.ld
   printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3uplay.ld
-  "${CROSS}ld" -EL -m elf32ltsmip -T m3uplay.ld -e m3uplay_tramp -o m3uplay.elf m3uplay_tramp.o m3uplay.o m3u.o
+  "${CROSS}ld" -EL -m elf32ltsmip -T m3uplay.ld -e m3uplay_tramp -o m3uplay.elf m3uplay_tramp.o m3uplay.o
   [ -z "$("${CROSS}size" -A m3uplay.elf | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "m3uplay: has writable data, which a blob can't carry"; exit 1; }
   "${CROSS}objcopy" -O binary -j .text m3uplay.elf m3uplay.bin
   [ "$(sym m3uplay.elf m3uplay_tramp)" = "400d4cd0" ] || { echo "m3uplay_tramp is not at 0x400D4CD0: $(sym m3uplay.elf m3uplay_tramp)"; exit 1; }
   [ "$(stat -c %s m3uplay.bin)" -le $((0x730)) ] || { echo "m3uplay blob too big for the bank tail: $(stat -c %s m3uplay.bin) > 0x730"; exit 1; }
-  "$PY" -I "$T/m3u/patch_m3uplay.py" browser.ap browser.ap m3uplay.bin 0x400d4cd0 0x$(sym m3uplay.elf m3uplay_fetch) | sed 's/^/   /'
-  echo "   blob $(stat -c %s m3uplay.bin) bytes at 0x400D4CD0, m3uplay_fetch 0x$(sym m3uplay.elf m3uplay_fetch)"
+
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3u_meng_tramp.raw.o "$T/m3u/m3u_meng_tramp.S"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3u_meng_tramp.raw.o m3u_meng_tramp.o
+  printf 'SECTIONS { . = 0x7A053338; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3u_meng_tramp.ld
+  printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3u_meng_tramp.ld
+  "${CROSS}ld" -EL -m elf32ltsmip -T m3u_meng_tramp.ld -e m3u_setloc_0 -o m3u_meng_tramp.elf m3u_meng_tramp.o
+  [ -z "$("${CROSS}size" -A m3u_meng_tramp.elf | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "m3u_meng_tramp: has writable data"; exit 1; }
+  "${CROSS}objcopy" -O binary -j .text m3u_meng_tramp.elf m3u_meng_tramp.bin
+  [ "$(stat -c %s m3u_meng_tramp.bin)" -le $((0xC8)) ] || { echo "m3u_meng_tramp too big: $(stat -c %s m3u_meng_tramp.bin) > 0xC8"; exit 1; }
+
+  blob m3u_meng "$T/m3u/m3u_meng.c" 0x7b268000 -I"$T/m3u"
+  [ "$(sym m3u_meng.elf m3u_meng_step)" = "7b268000" ] || { echo "m3u_meng_step is not at 0x7B268000: $(sym m3u_meng.elf m3u_meng_step)"; exit 1; }
+  [ "$(stat -c %s m3u_meng.bin)" -le $((0x600)) ] || { echo "m3u_meng blob too big: $(stat -c %s m3u_meng.bin) > 0x600"; exit 1; }
+
+  "$PY" -I "$T/m3u/patch_m3uplay.py" browser.ap browser.ap m3uplay.bin 0x400d4cd0 \
+    mengine.ap mengine.ap m3u_meng_tramp.bin m3u_meng.bin \
+    0x$(sym m3u_meng_tramp.elf m3u_setloc_0) 0x$(sym m3u_meng_tramp.elf m3u_byno_0) \
+    0x$(sym m3u_meng_tramp.elf m3u_prev_0) 0x$(sym m3u_meng_tramp.elf m3u_next_0) | sed 's/^/   /'
 fi
 PATCHED="mengine.ap browser.ap music.ap"
 [ $M3UVIS = 1 ] && PATCHED="$PATCHED fat_32n.drv exfatn.drv"
@@ -351,7 +362,9 @@ if [ $TEST = 1 ]; then
   fi
   if [ $M3UPLAY = 1 ]; then
     M30_PLAY_BIN=$PWD/m3uplay.bin M30_PLAY_ELF=$PWD/m3uplay.elf \
-      CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/test_m3uplay.py" "$F/browser.ap" browser.ap > test_m3uplay.txt 2>&1 || true
+    M30_MTRAMP_BIN=$PWD/m3u_meng_tramp.bin M30_MTRAMP_ELF=$PWD/m3u_meng_tramp.elf \
+    M30_MSTEP_BIN=$PWD/m3u_meng.bin M30_MSTEP_ELF=$PWD/m3u_meng.elf \
+      CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/test_m3uplay.py" "$F/browser.ap" browser.ap "$F/mengine.ap" mengine.ap > test_m3uplay.txt 2>&1 || true
     grep -q 'test_m3uplay: OK' test_m3uplay.txt && echo 'ALL PASS' >> test_m3uplay.txt || true
     echo "   m3uplay:  $(grep -c '^PASS' test_m3uplay.txt) checks, $(tail -n 1 test_m3uplay.txt)"
   fi

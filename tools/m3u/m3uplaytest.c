@@ -1,385 +1,476 @@
-/* Test for the M3U play-on-click hook. Dual-mode:
+/* Host (-m32) scenario harness for m3uplay.c + m3u_meng.c.
  *
- *   host (default gcc):  runs the scenario logic against m3uplay.c/m3u.c
- *                        compiled natively with -DM3UPLAY_TEST; clicks call
- *                        m3uplay_click directly (the trampoline's index math
- *                        is covered by the QEMU mode below).
- *   MIPS (-D__mips__):   the QEMU build: the actual blob (m3uplay_tramp.S +
- *                        m3uplay.c + m3u.c) links at 0x400D4CD0 and the
- *                        patched click-site jal (60 18 34 53) at 0x40D15194,
- *                        so clicks execute the real patched bytes. Fixed
- *                        firmware addresses are remapped to test RAM:
- *                        0x10001000 vstate, 0x10001100 REC_G,
- *                        0x10001104 CTXW, 0x10001108 desc.
- *
- * Mocks: test_fs implements the kernel fs ABI over an in-memory playlist
- * (op 1 returns fake dir records; op 5/9/0xB/0xD/7 serve the .m3u file),
- * test_classify records calls and returns 2, and test_fetch mimics the
- * stock wrapper 0x780DB460 (call the hooked stub, publish the result to
- * REC_G, return (ptr != 0)).
+ * Models the real ATJ2137 exFAT VFS ABI verified from exfatn.drv, browser.ap,
+ * playlist.ap, and mengine.ap:
+ *   - op 0 (OP_CD): ':', '|', '/' over a multi-folder directory tree
+ *   - op 1 (OP_DIR): ONLY accepts 0x82 (DIR_HEAD) and 0x80 (DIR_NEXT);
+ *                    rejects < 0x80 with 0 (just like real exfatn.drv err 21!)
+ *   - op 2 (OP_GETNAME): writes FF FE + UTF-16LE + 00 00 when max_units > 0,
+ *                        or the 4-byte packed extension when max_units == 0
+ *   - op 3 (OP_OFFSET): snapshots/restores 73B dir_stack + 8B file_off
+ *   - op 5 (OP_OPEN): opens the currently pointed-to file when a1 == 0
+ *   - op 7/0xB/0xD: close, sector-aligned seek, 512B sector read
  */
-#ifdef __mips__
-typedef unsigned int u32;
-typedef unsigned short u16;
-typedef unsigned char u8;
-static long sys3(long n, long a, long b, long c)
-{
-    register long v0 asm("v0") = n, a0 asm("a0") = a, a1 asm("a1") = b, a2 asm("a2") = c, a3 asm("a3");
-    asm volatile("syscall" : "+r"(v0), "=r"(a3) : "r"(a0), "r"(a1), "r"(a2) : "memory", "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "hi", "lo");
-    return v0;
-}
-static char obuf[8192];
-static int olen;
-static void puts_(const char *s) { while (*s) obuf[olen++] = *s++; }
-static void putu(u32 v) { char t[12]; int i = 0; do t[i++] = '0' + v % 10; while (v /= 10); while (i) obuf[olen++] = t[--i]; }
-static void flush_out(void) { sys3(4004, 1, (long)obuf, olen); }
-static void done(int rc) { sys3(4001, rc, 0, 0); for (;;) ; }
-#define T_VSTATE 0x10001000u
-#define T_REC_G  0x10001100u
-#define T_CTXW   0x10001104u
-#define T_DESC   0x10001108u
-#define T_FSLOG  0x10001110u
-#else
 #include <stdio.h>
 #include <stdlib.h>
-typedef unsigned int u32;
-typedef unsigned short u16;
-typedef unsigned char u8;
-static void puts_(const char *s) { fputs(s, stdout); }
-static void putu(u32 v) { printf("%u", v); }
-static void flush_out(void) { fflush(stdout); }
-static void done(int rc) { exit(rc); }
-#endif
-
+#include <string.h>
 #include "m3uplay.h"
 
-/* the pointers the test build of m3uplay.c uses */
 volatile struct vstate *test_vs;
-volatile u32 *test_rec_g;
+
+/* browser.ap hooks */
 volatile u32 *test_ctxw;
+volatile u32 *test_maskw;
+volatile u16 *test_dircnt;
+volatile u8  *test_layerb;
+volatile u8  *test_diskb;
 
-/* the blob's entry point */
-extern u32 m3uplay_click(u32, u32);
-extern u32 m3uplay_fetch(u32, u32, u32, u32, u32);
+/* mengine.ap hooks */
+volatile u8 *test_meng_eng;
+u8 *test_meng_sec;
 
-#ifdef __mips__
-static u32 (*volatile entryp)(u32);
-static u32 (*volatile fetchp)(u32, u32, u32, u32, u32);
-#endif
+/* ---- Mock exFAT tree ---------------------------------------------------- */
 
-/* ---- mock kernel fs ----------------------------------------------------- */
+struct vnode {
+    int parent;         /* -1 for root */
+    int is_dir;
+    const char *name;   /* UTF-8 */
+    u32 ext4;           /* 4-byte packed ext as stored on exFAT */
+    u32 ext_bit;        /* mask bit in rom_ext_name */
+    const char *data;   /* file contents (for .m3u files) */
+    u32 size;
+};
 
-#ifdef __mips__
-struct fslog { u32 op, a1, a2, a3; };
-static volatile struct fslog *fslog = (volatile struct fslog *)T_FSLOG;
-#else
-struct fslog { u32 op, a1, a2, a3; };
-static struct fslog fslog_[64];
-static volatile struct fslog *fslog = fslog_;
-#endif
-static u32 fs_n;
-static u32 kpos;
-static int playlist_present = 1;
+#define EXT4(a,b,c,d) ((u32)(u8)(a) | ((u32)(u8)(b)<<8) | ((u32)(u8)(c)<<16) | ((u32)(u8)(d)<<24))
 
-static const char pl_text[] =
-    "#EXTM3U\r\n"
-    "#EXTINF:123,Song One\r\n"
-    "../Music/song one.mp3\r\n"
-    "song2.flac\r\n";
-#define PL_SIZE ((u32)sizeof pl_text - 1)
-static const char pl_empty[] = "#EXTM3U\r\n#EXTINF:1,x\r\n";
+/* Bit 4 -> FLAC, Bit 0 -> MP3, Bit 8 -> m3u, Bit 12 -> m3u8 */
+#define BIT_MP3  (1u << 30)
+#define BIT_FLAC (1u << 26)
+#define BIT_M3U  (1u << 8)
+#define BIT_M3U8 (1u << 12)
 
-static u8 name_idk[32];    /* BOM+UTF-16LE "idk.m3u" + double NUL */
-static u8 name_empty[32];  /* BOM+UTF-16LE "empty.m3u" */
-static u8 name_mp3[32];    /* BOM+UTF-16LE "x.mp3" */
+static const char idk_m3u[] =
+    "\xEF\xBB\xBF"  /* UTF-8 BOM */
+    "#EXTM3U\n"
+    "#EXTINF:210,Very long comment line -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
+    "../Music/2hollis/boy/04 - crash.flac\n"
+    "../Music/missing_ghost.flac\n"
+    "../Music/T\xC3\x81VOL/\xE2\x98\x86NoAki\xE2\x98\x86/\xE3\x80\x8CDigital Twin\xE3\x80\x8D.flac\r\n"
+    "../Music/LongDir/09 - One Day The Only Butterflies Left Will Be In Your Chest As You March Towards Your Death (feat. Amy L.flac\n"
+    "/Music/root_hit.mp3";     /* final line without trailing LF, leading '/' */
 
-static void mkname16(u8 *d, const char *s)
+static const char empty_m3u[] = "#EXTM3U\r\n   \r\n# comment only\n";
+static const char broken_m3u[] = "../Music/nope1.flac\n../Music/nope2.mp3\n";
+
+static struct vnode tree[] = {
+    /*  0 */ { -1, 1, "",           0, 0, 0, 0 },
+    /*  1 */ {  0, 1, "Playlists",  0, 0, 0, 0 },
+    /*  2 */ {  0, 1, "Music",      0, 0, 0, 0 },
+    /*  3 */ {  2, 1, "2hollis",    0, 0, 0, 0 },
+    /*  4 */ {  3, 1, "boy",        0, 0, 0, 0 },
+    /*  5 */ {  2, 1, "T\xC3\x81VOL", 0, 0, 0, 0 },
+    /*  6 */ {  5, 1, "\xE2\x98\x86NoAki\xE2\x98\x86", 0, 0, 0, 0 },
+    /*  7 */ {  2, 1, "LongDir",    0, 0, 0, 0 },
+    /* files in Playlists/ (parent 1): */
+    /*  8 */ {  1, 0, "idk.m3u",    EXT4('m','3','u',0),   BIT_M3U,  idk_m3u,    sizeof idk_m3u - 1 },
+    /*  9 */ {  1, 0, "empty.m3u",  EXT4('m','3','u',0),   BIT_M3U,  empty_m3u,  sizeof empty_m3u - 1 },
+    /* 10 */ {  1, 0, "broken.m3u8",EXT4('m','3','u','8'), BIT_M3U8, broken_m3u, sizeof broken_m3u - 1 },
+    /* 11 */ {  1, 0, "other.mp3",  EXT4('m','p','3',0),   BIT_MP3,  "ID3", 3 },
+    /* audio tracks: */
+    /* 12 */ {  4, 0, "03 - intro.flac", EXT4('f','l','a','c'), BIT_FLAC, "fLaC", 4 },
+    /* 13 */ {  4, 0, "04 - crash.flac", EXT4('f','l','a','c'), BIT_FLAC, "fLaC", 4 },
+    /* 14 */ {  6, 0, "\xE3\x80\x8CDigital Twin\xE3\x80\x8D.flac", EXT4('f','l','a','c'), BIT_FLAC, "fLaC", 4 },
+    /* 15 */ {  7, 0, "09 - One Day The Only Butterflies Left Will Be In Your Chest As You March Towards Your Death (feat. Amy L.flac", EXT4('f','l','a','c'), BIT_FLAC, "fLaC", 4 },
+    /* 16 */ {  2, 0, "root_hit.mp3", EXT4('m','p','3',0), BIT_MP3, "ID3", 3 },
+};
+#define NTREE ((int)(sizeof tree / sizeof tree[0]))
+
+struct vfs_ctx {
+    int cwd;            /* node index of current directory */
+    int cur_entry;      /* node index of last vfs_dir / vfs_offset target, -1 if none */
+    int open_node;      /* node index of open file, -1 if closed */
+    u32 seek_pos;
+    int open_count;     /* verify handles are balanced (0 leaks!) */
+};
+
+static struct vfs_ctx brow_vfs = { 1, -1, -1, 0, 0 };   /* starts in Playlists/ */
+static struct vfs_ctx meng_vfs = { 0, -1, -1, 0, 0 };
+
+static int node_depth(int n)
 {
-    u32 i;
-    d[0] = 0xFF; d[1] = 0xFE;
-    for (i = 0; s[i]; i++) { d[2 + 2 * i] = (u8)s[i]; d[3 + 2 * i] = 0; }
-    d[2 + 2 * i] = 0; d[3 + 2 * i] = 0; d[4 + 2 * i] = 0; d[5 + 2 * i] = 0;
+    int d = 0;
+    while (n > 0 && tree[n].parent >= 0) {
+        d++;
+        n = tree[n].parent;
+    }
+    return d;
 }
-static int name_eq(const volatile u8 *a, const u8 *b)
+
+/* Encode UTF-8 string to UTF-16LE with FF FE BOM into dst (up to max_units). */
+static u32 write_utf16_bom(u8 *dst, const char *s, u32 max_units)
 {
-    u32 i;
-    for (i = 0; i < 32; i++) if (a[i] != b[i]) return 0;
-    return 1;
+    const u8 *p = (const u8 *)s;
+    u32 u = 0;
+
+    if (max_units < 2) return 0;
+    dst[0] = 0xFF; dst[1] = 0xFE;
+    u = 1;
+    while (*p && u + 1 < max_units) {
+        u32 b0 = *p++, cp;
+        if (b0 < 0x80) cp = b0;
+        else if ((b0 & 0xE0) == 0xC0) { cp = ((b0 & 0x1F) << 6) | (*p++ & 0x3F); }
+        else { cp = ((b0 & 0x0F) << 12) | ((u32)(p[0] & 0x3F) << 6) | (p[1] & 0x3F); p += 2; }
+        dst[2 * u] = (u8)(cp & 0xFF);
+        dst[2 * u + 1] = (u8)(cp >> 8);
+        u++;
+    }
+    dst[2 * u] = 0;
+    dst[2 * u + 1] = 0;
+    return u + 1;   /* BOM + chars + NUL */
 }
 
-/* fake dir records: +0 attr, +4 name pointer */
-struct frec { u8 attr; u8 r[3]; const u8 *name; u16 x; };
-static struct frec recs[8];
-static struct frec rec_parent;
-
-static u32 fake_rec(u32 idx)
+static long run_vfs(struct vfs_ctx *vc, u32 a1, u32 a2, u32 a3, u32 op)
 {
-    if (idx >= 0x80 || idx >= 8) return (u32)(unsigned long)&rec_parent;
-    return (u32)(unsigned long)&recs[idx];
-}
-
-static long mock_fs(u32 a0, u32 a1, u32 a2, u32 a3, u32 op)
-{
-    (void)a0;
-    if (fs_n < 64) { fslog[fs_n].op = op; fslog[fs_n].a1 = a1; fslog[fs_n].a2 = a2; fslog[fs_n].a3 = a3; fs_n++; }
     switch (op) {
-    case 1:
-        return (long)fake_rec(a1 & 0xFF);
-    case 5:
-        if (a1 < 0x1000) return 0;   /* an index, not a name: fetch passthrough */
-        if (playlist_present && name_eq((const volatile u8 *)a1, name_idk)) return 0x100;
-        if (name_eq((const volatile u8 *)a1, name_empty)) return 0x101;
+    case OP_CD:
+        if (a1 == ':') { vc->cwd = 0; vc->cur_entry = -1; return 1; }
+        if (a1 == '|') {
+            if (vc->cwd <= 0) return 0;
+            vc->cwd = tree[vc->cwd].parent;
+            vc->cur_entry = -1;
+            return 1;
+        }
+        if (a1 == '/') {
+            if (vc->cur_entry < 0 || !tree[vc->cur_entry].is_dir) return 0;
+            vc->cwd = vc->cur_entry;
+            vc->cur_entry = -1;
+            return 1;
+        }
         return 0;
-    case 9:
-        if (a2 == 0x100) { *(volatile u32 *)a1 = PL_SIZE; return 0; }
-        if (a2 == 0x101) { *(volatile u32 *)a1 = (u32)sizeof pl_empty - 1; return 0; }
+
+    case OP_DIR: {
+        int start, i;
+        /* Real exfatn.drv rejects any command < 0x80 with error 21 and returns 0! */
+        if (a1 == DIR_HEAD) start = 1;
+        else if (a1 == DIR_NEXT) start = (vc->cur_entry >= 0) ? vc->cur_entry + 1 : NTREE;
+        else return 0;
+
+        for (i = start; i < NTREE; i++) {
+            if (tree[i].parent != vc->cwd) continue;
+            if (a3 == EXT_DIRS) {
+                if (tree[i].is_dir) { vc->cur_entry = i; return 0x44495200; }
+            } else {
+                if (!tree[i].is_dir && (tree[i].ext_bit & a3)) {
+                    vc->cur_entry = i;
+                    return (long)tree[i].ext4;
+                }
+            }
+        }
+        vc->cur_entry = -1;
+        return 0;
+    }
+
+    case OP_GETNAME: {
+        u8 *buf = (u8 *)(unsigned long)a1;
+        if (vc->cur_entry < 0) return 0;
+        if (a2 == 0) {
+            *(u32 *)buf = tree[vc->cur_entry].ext4;
+            return 4;
+        }
+        return (long)write_utf16_bom(buf, tree[vc->cur_entry].name, a2);
+    }
+
+    case OP_OFFSET: {
+        u8 *dir_buf = (u8 *)(unsigned long)a1;
+        u32 *off_buf = (u32 *)(unsigned long)a2;
+        if (a3 == 0) {  /* GET */
+            if (vc->cur_entry < 0) return 0;
+            memset(dir_buf, 0, 73);
+            *(u32 *)dir_buf = (u32)vc->cwd;
+            dir_buf[72] = (u8)node_depth(vc->cwd);
+            off_buf[0] = 0xA0000000u | (u32)vc->cur_entry;
+            off_buf[1] = (u32)(vc->cwd * 0x100 + vc->cur_entry);
+            return 1;
+        } else {        /* SET */
+            int ent = (int)(off_buf[0] & 0xFFFFu);
+            if ((off_buf[0] & 0xFFFF0000u) != 0xA0000000u || ent <= 0 || ent >= NTREE) return 0;
+            vc->cwd = tree[ent].parent;
+            vc->cur_entry = ent;
+            return 1;
+        }
+    }
+
+    case OP_OPEN:
+        if (a1 != 0 || vc->cur_entry < 0 || tree[vc->cur_entry].is_dir) return 0;
+        vc->open_node = vc->cur_entry;
+        vc->seek_pos = 0;
+        vc->open_count++;
+        return 0x55;
+
+    case OP_CLOSE:
+        if (a1 == 0x55 && vc->open_node >= 0) {
+            vc->open_node = -1;
+            vc->open_count--;
+            return 0;
+        }
         return -1;
-    case 0xB:
-        if (a3 == 0x100 || a3 == 0x101) { kpos = a1; return 0; }
-        return -1;
-    case 0xD: {
-        u32 n = a2, i;
-        const char *src;
-        u32 sz;
-        if (a3 == 0x100) { src = pl_text; sz = PL_SIZE; }
-        else if (a3 == 0x101) { src = pl_empty; sz = (u32)sizeof pl_empty - 1; }
-        else return -1;
-        if (kpos >= sz) return 0;
-        if (kpos + n > sz) n = sz - kpos;
-        for (i = 0; i < n; i++) ((u8 *)(unsigned long)a1)[i] = (u8)src[kpos + i];
-        kpos += 512;                 /* the kernel advances whole sectors */
+
+    case OP_SEEK:
+        if (a3 != 0x55 || vc->open_node < 0 || (a1 & 511u) != 0) return -1;
+        vc->seek_pos = a1;
+        return 0;
+
+    case OP_READ: {
+        u8 *dst = (u8 *)(unsigned long)a1;
+        u32 sz, n = a2;
+        if (a3 != 0x55 || vc->open_node < 0) return -1;
+        sz = tree[vc->open_node].size;
+        if (vc->seek_pos >= sz) return 0;
+        if (vc->seek_pos + n > sz) n = sz - vc->seek_pos;
+        memcpy(dst, tree[vc->open_node].data + vc->seek_pos, n);
+        vc->seek_pos += 512;
         return (long)n;
     }
-    case 7:
-        return 0;
     }
     return 0;
 }
 
-long (*test_fs)(u32, u32, u32, u32, u32) = mock_fs;
+static long mock_brow_fs(u32 ctx, u32 a1, u32 a2, u32 a3, u32 op)
+{
+    if (ctx != 0xB1u) return 0;
+    return run_vfs(&brow_vfs, a1, a2, a3, op);
+}
+
+static long mock_meng_fs(u32 ctx, u32 a1, u32 a2, u32 a3, u32 op)
+{
+    if (ctx != 0xE1u) return 0;
+    return run_vfs(&meng_vfs, a1, a2, a3, op);
+}
+
+fs_fn test_fs = mock_brow_fs;
+fs_fn test_meng_fs = mock_meng_fs;
+
+static u32 rng_state = 0x12345678u;
+static u32 mock_rand(void)
+{
+    rng_state = rng_state * 1664525u + 1013904223u;
+    return rng_state;
+}
+u32 (*test_meng_rand)(void) = mock_rand;
 
 static u32 classify_calls;
 static u32 mock_classify(u32 row)
 {
-    (void)row;
+    const u8 *r = (const u8 *)(unsigned long)row;
     classify_calls++;
-    return 2;
+    if ((r[0] | 0x20) == 'm' && r[1] == '3' && (r[2] | 0x20) == 'u') return 5;
+    return 0;
 }
 u32 (*test_classify)(u32) = mock_classify;
 
-/* mimics the stock wrapper 0x780DB460 around the hooked pool word */
-static u32 wrap_fetch(u32 idx, u32 x)
+/* Mirrors stock sub_780DB49C(mask, n): DIR_HEAD then n-1 DIR_NEXTs. */
+static u32 mock_step_dir(u32 mask, u16 n)
 {
-#ifdef __mips__
-    u32 r = fetchp(0xC7u, idx, 0, x, 1);
-#else
-    u32 r = m3uplay_fetch(0xC7u, idx, 0, x, 1);
-#endif
-    *test_rec_g = r;
-    return r != 0;
+    u32 cmd = DIR_HEAD;
+    if (n == 0) return 0;
+    while (mock_brow_fs(*test_ctxw, cmd, 0, mask, OP_DIR) != 0) {
+        if (--n == 0) return 1;
+        cmd = DIR_NEXT;
+    }
+    return 0;
 }
-u32 (*test_fetch)(u32, u32) = wrap_fetch;
+u32 (*test_step_dir)(u32, u16) = mock_step_dir;
 
-/* ---- helpers ------------------------------------------------------------ */
+/* Mirrors m3u_setloc_0 in m3u_meng_tramp.S + stock 0x7B0685F4. */
+static u32 sim_meng_setloc(u8 *desc)
+{
+    u32 ext_now = 0;
+    if (!mock_meng_fs(0xE1u, (u32)(unsigned long)(desc + 0x10), (u32)(unsigned long)(desc + 8), 1, OP_OFFSET)) {
+        test_vs->magic = 0;
+        return 0;
+    }
+    mock_meng_fs(0xE1u, (u32)(unsigned long)&ext_now, 0, 0, OP_GETNAME);
+    if (ext_now != *(u32 *)(desc + 4)) {
+        test_vs->magic = 0;
+        return 0;
+    }
+    test_meng_eng[0x22] = desc[1];
+    *(u32 *)(test_meng_eng + 0x28) = ext_now;
+    /* Stock folder count (boy/ has 2 files), overridden below if VS matches: */
+    *(u16 *)(test_meng_eng + 0x26) = 2;
+    *(u16 *)(test_meng_eng + 0x24) = 2;
+
+    if (test_vs->magic == M3UPLAY_MAGIC
+            && *(u32 *)(desc + 8) == test_vs->cur_off[0]
+            && *(u32 *)(desc + 12) == test_vs->cur_off[1]) {
+        *(u16 *)(test_meng_eng + 0x26) = test_vs->count;
+        *(u16 *)(test_meng_eng + 0x24) = test_vs->pos;
+    } else {
+        test_vs->magic = 0;
+    }
+    return 1;
+}
 
 static u32 fails;
-static void check(int ok, const char *what)
+static void check(int ok, const char *msg)
 {
-    if (ok) { puts_("PASS  "); puts_(what); puts_("\n"); }
-    else { fails++; puts_("FAIL  "); puts_(what); puts_("\n"); }
+    printf("%s  %s\n", ok ? "PASS" : "FAIL", msg);
+    if (!ok) fails++;
 }
 
-/* decode the record's UTF-16 name at rec+0x10 into ASCII (0 on mismatch) */
-static int rec_name_is(const volatile u8 *rec, const char *want)
-{
-    const volatile u8 *nm = rec + 0x10;
-    u32 i;
-    if (nm[0] != 0xFF || nm[1] != 0xFE) return 0;
-    for (i = 0; want[i]; i++) {
-        if (nm[2 + 2 * i] != (u8)want[i] || nm[3 + 2 * i] != 0) return 0;
-    }
-    return nm[2 + 2 * i] == 0 && nm[3 + 2 * i] == 0;
-}
-
-/* the row: +0 ext[4], +4 marker, +8 name buf ptr */
-struct row { u32 ext; u32 marker; u32 namebuf; };
-static struct row row_m3u, row_mp3;
-
-#ifdef __mips__
-static u32 frame[0x40];
-static u8 state[0x20];
-/* call the patched site 0x40D15194 exactly as the dispatcher does; the
- * volatile pointer keeps GCC from folding the call into a direct jal,
- * which would drop the ISA bit and run the site as MIPS32 */
-static u32 click(const struct row *r, u32 list_no, u32 count)
-{
-    register u32 fp asm("s1");
-    u32 v;
-    *(u32 *)((u8 *)frame + 0x2C) = (u32)(unsigned long)state;
-    *(volatile u16 *)(state + 0xE) = (u16)list_no;
-    *(volatile u16 *)(T_DESC + 2) = (u16)count;
-    fp = (u32)(unsigned long)frame;
-    asm volatile("" : "+r"(fp));
-    v = entryp((u32)(unsigned long)r);
-    return v;
-}
-#else
-static u32 click(const struct row *r, u32 list_no, u32 count)
-{
-    return m3uplay_click((u32)(unsigned long)r, list_no - count);
-}
-#endif
+struct row { u8 ext[4]; u32 marker; u32 namep; };
 
 int main(void)
 {
-    u32 v;
-    u32 cls_before;
-#ifdef __mips__
-    static u8 vsram[0x200];
-    static u32 rec_g, ctxw;
-    test_vs = (volatile struct vstate *)(void *)T_VSTATE;
-    test_rec_g = (volatile u32 *)T_REC_G;
-    test_ctxw = (volatile u32 *)T_CTXW;
-    (void)vsram; (void)rec_g; (void)ctxw;
-    entryp = (u32 (*)(u32))0x40D15195u;   /* ISA bit: the site is MIPS16e */
-    fetchp = m3uplay_fetch;
-    *(volatile u32 *)T_CTXW = 0xC7u;
-    *(volatile u32 *)T_REC_G = 0;
-#else
     static struct vstate vs;
-    static u32 rec_g, ctxw;
+    static u32 ctxw = 0xB1u;
+    static u32 maskw = 0x7E191FA0u;
+    static u16 dircnt = 0;
+    static u8 layerb = 1;       /* Playlists/ is at layer 1 */
+    static u8 diskb = 'H';
+    static u8 meng_eng[0x60];
+    static u8 meng_sec[512] __attribute__((aligned(4)));
+    static u8 arg0[0xA8] __attribute__((aligned(4)));
+    struct row r_m3u  = { {'m','3','u',0},   0x32, 0 };
+    struct row r_m3u8 = { {'M','3','U','8'}, 0x32, 0 };
+    struct row r_mp3  = { {'m','p','3',0},   0x32, 0 };
+    u8 *desc = arg0 + 4;
+    u32 rc, ext = 0;
+
     test_vs = &vs;
-    test_rec_g = &rec_g;
     test_ctxw = &ctxw;
-    *test_ctxw = 0xC7u;
-    *test_rec_g = 0;
-#endif
-#define VS (test_vs)
-#define REC_G (*test_rec_g)
+    test_maskw = &maskw;
+    test_dircnt = &dircnt;
+    test_layerb = &layerb;
+    test_diskb = &diskb;
+    test_meng_eng = meng_eng;
+    test_meng_sec = meng_sec;
+    *(u32 *)(meng_eng + 0x34) = 0xE1u;  /* E_HANDLE */
 
-    mkname16(name_idk, "idk.m3u");
-    mkname16(name_empty, "empty.m3u");
-    mkname16(name_mp3, "x.mp3");
-    recs[2].attr = 0; recs[2].name = name_idk;
-    recs[3].attr = 0; recs[3].name = name_empty;
-    recs[5].attr = 0; recs[5].name = name_mp3;
-    rec_parent.attr = 1; rec_parent.name = name_mp3;
-    row_m3u.ext = 0x2055334Du;   /* "M3U " */
-    row_mp3.ext = 0x2050334Du;   /* "MP3 " */
+    check(sizeof(struct vstate) <= 0x184, "sizeof(struct vstate) fits in 0x184-byte zero run");
 
-    /* 1: click the .m3u row (list_no 5, count 3 -> dir idx 2) */
-    cls_before = classify_calls;
-    fs_n = 0;
-    v = click(&row_m3u, 5, 3);
-    check(v == 0, "click m3u returns class 0 (engine launch)");
-    check(classify_calls == cls_before, "click m3u does not call the classifier");
-    check(VS->magic == M3UPLAY_MAGIC && VS->flag == 1, "server armed (magic+flag)");
-    check(VS->base == 2, "base = list_no - count = 2");
-    check(VS->count == 2, "playlist counted (2 entries)");
-    check(REC_G == (u32)(unsigned long)&VS->rec[0], "track 0 record published to REC_G");
-    check(*(volatile u32 *)(VS->rec + 0) == 2
-          && *(volatile u32 *)(VS->rec + 4) == (u32)(unsigned long)(VS->rec + 0x10),
-          "record layout: entry id at +0 (base), name ptr -> rec+0x10");
-    check(rec_name_is(VS->rec, "Music/song one.mp3"), "track 0 name in record (../ stripped)");
-    check(VS->plh == 0x100, "playlist handle kept open in vstate");
-    check(*(volatile u32 *)(VS->name + 4) == 1, "root mode latched (first entry ../)");
+    /* 1. Click idk.m3u (1st file in Playlists/, idx = 1) */
+    brow_vfs.cwd = 1;
+    classify_calls = 0;
+    rc = m3uplay_click((u32)(unsigned long)&r_m3u, 1, arg0);
+    check(rc == 0x8001u, "click idk.m3u returns 0x8001 (direct launch)");
+    check(classify_calls == 0, "click idk.m3u does not invoke fallback dialog");
+    check(vs.magic == M3UPLAY_MAGIC && vs.count == 5 && vs.pos == 1,
+          "vstate armed: count=5 entries, pos=1");
+    check(brow_vfs.cwd == 1 && brow_vfs.open_count == 0,
+          "browser cwd restored to Playlists/ and 0 open handles leaked");
+    check(arg0[0] == 0 && desc[0] == 'H' && desc[1] == 3
+          && *(u32 *)(desc + 4) == EXT4('f','l','a','c')
+          && (*(u32 *)(desc + 8) & 0xFFFFu) == 13
+          && *(u16 *)(desc + 0x5C) == 5 && *(u16 *)(desc + 0x5E) == 1,
+          "desc populated with Track 1 (04 - crash.flac, layer 3, ext flac, 1/5)");
 
-    /* 2: next track through the wrapper */
-    v = wrap_fetch(3, 0);
-    check(v == 1 && REC_G == (u32)(unsigned long)&VS->rec[0], "fetch base+1 serves track 1");
-    check(rec_name_is(VS->rec, "song2.flac"), "track 1 name in record");
+    /* 2. Handoff to mengine set_location */
+    rc = sim_meng_setloc(desc);
+    check(rc == 1 && vs.magic == M3UPLAY_MAGIC
+          && *(u16 *)(meng_eng + 0x26) == 5 && *(u16 *)(meng_eng + 0x24) == 1
+          && meng_vfs.cur_entry == 13,
+          "mengine set_location positions on 04 - crash.flac and sets 1/5");
 
-    /* 3: beyond the playlist -> passthrough to the real dir stream */
-    v = wrap_fetch(4, 0);
-    check(v == 1 && REC_G == (u32)(unsigned long)&recs[4], "fetch past playlist end passes through");
+    /* 3. Sequential Next: skips missing entry #2 -> lands on UTF-8 entry #3! */
+    meng_eng[0x39] = 0; /* Repeat Off */
+    meng_eng[0x23] = 0; /* Shuffle Off */
+    rc = m3u_meng_step(&ext, 0, 1);
+    check(rc == 1 && meng_vfs.cur_entry == 14 && vs.pos == 3
+          && *(u16 *)(meng_eng + 0x24) == 3 && ext == EXT4('f','l','a','c'),
+          "next skips missing entry #2 and resolves UTF-8 CJK/accented track #3");
 
-    /* 4: markers pass through */
-    v = wrap_fetch(0x82, 0);
-    check(REC_G == (u32)(unsigned long)&rec_parent, "fetch 0x82 marker passes through");
+    /* 4. Next -> >78-char long filename track #4 */
+    rc = m3u_meng_step(&ext, 0, 1);
+    check(rc == 1 && meng_vfs.cur_entry == 15 && vs.pos == 4,
+          "next resolves 110-char long filename track #4");
 
-    /* 5: disarmed -> passthrough */
-    VS->flag = 0;
-    fs_n = 0;
-    v = wrap_fetch(2, 0);
-    check(v == 1 && REC_G == (u32)(unsigned long)&recs[2], "disarmed fetch passes through");
-    check(fs_n > 0 && fslog[fs_n - 1].op == 1, "disarmed fetch reached the real fs (op 1)");
+    /* 5. Next -> root-leading '/Music/root_hit.mp3' without trailing LF (#5) */
+    rc = m3u_meng_step(&ext, 0, 1);
+    check(rc == 1 && meng_vfs.cur_entry == 16 && vs.pos == 5 && ext == EXT4('m','p','3',0),
+          "next resolves root-relative track #5 (unterminated final line)");
 
-    /* 6: non-m3u row -> classifier, untouched state */
-    VS->magic = 0;
-    cls_before = classify_calls;
-    v = click(&row_mp3, 8, 3);
-    check(v == 2 && classify_calls == cls_before + 1, "mp3 row goes to the classifier");
-    check(VS->flag == 0, "mp3 click leaves the server disarmed");
+    /* 6. End of playlist: Repeat Off stops, Repeat All wraps to track #1 */
+    rc = m3u_meng_step(&ext, 0, 1);
+    check(rc == 0 && vs.pos == 5, "next at end with Repeat Off returns 0 (stops cleanly)");
+    meng_eng[0x39] = 2; /* Repeat All */
+    rc = m3u_meng_step(&ext, 0, 1);
+    check(rc == 1 && meng_vfs.cur_entry == 13 && vs.pos == 1,
+          "next at end with Repeat All wraps to track #1");
 
-    /* 7: m3u row but playlist unreadable -> classifier fallback, no state */
-    playlist_present = 0;
-    cls_before = classify_calls;
-    v = click(&row_m3u, 5, 3);
-    check(v == 2 && classify_calls == cls_before + 1, "unreadable playlist falls back to classifier");
-    check(VS->flag == 0 && VS->magic == 0, "fallback leaves the server disarmed");
-    playlist_present = 1;
+    /* 7. Repeat One holds current track */
+    meng_eng[0x39] = 1; /* Repeat One */
+    rc = m3u_meng_step(&ext, 0, 1);
+    check(rc == 1 && vs.pos == 1 && ext == EXT4('f','l','a','c'),
+          "Repeat One keeps current track");
 
-    /* 8: empty playlist (comments only) -> fallback */
-    v = click(&row_m3u, 6, 3);   /* idx = 3 -> empty.m3u record */
-    check(v == 2, "empty playlist falls back to classifier");
-    check(VS->flag == 0, "empty playlist leaves the server disarmed");
+    /* 8. Prev: Repeat All wraps 1 -> 5, then steps 5 -> 4 -> 3 -> (skips #2) -> 1 */
+    meng_eng[0x39] = 2; /* Repeat All */
+    rc = m3u_meng_step(&ext, 0, 2);
+    check(rc == 1 && meng_vfs.cur_entry == 16 && vs.pos == 5,
+          "prev at track #1 with Repeat All wraps to track #5");
+    rc = m3u_meng_step(&ext, 0, 2);
+    check(rc == 1 && vs.pos == 4 && meng_vfs.cur_entry == 15, "prev steps 5 -> 4");
+    rc = m3u_meng_step(&ext, 0, 2);
+    check(rc == 1 && vs.pos == 3 && meng_vfs.cur_entry == 14, "prev steps 4 -> 3");
+    rc = m3u_meng_step(&ext, 0, 2);
+    check(rc == 1 && vs.pos == 1 && meng_vfs.cur_entry == 13,
+          "prev skips missing #2 and lands on #1");
 
-    /* 9: non-op-1 calls pass through even when armed */
-    click(&row_m3u, 5, 3);      /* re-arm */
-#ifdef __mips__
-    fs_n = 0;
-    v = fetchp(0xC7u, 2, 0xAA, 0xBB, 5);
-#else
-    fs_n = 0;
-    v = m3uplay_fetch(0xC7u, 2, 0xAA, 0xBB, 5);
-#endif
-    check(fs_n > 0 && fslog[fs_n - 1].op == 5 && fslog[fs_n - 1].a1 == 2 &&
-          fslog[fs_n - 1].a2 == 0xAA && fslog[fs_n - 1].a3 == 0xBB,
-          "op!=1 call passes through with identical args");
-    check(v == 0, "op!=1 returns the real fs result unchanged");
+    /* 9. get_byno: direct jump + out-of-range sets endflag */
+    rc = m3u_meng_step(&ext, 4, 0);
+    check(rc == 1 && vs.pos == 4 && meng_vfs.cur_entry == 15, "get_byno(4) jumps to track #4");
+    meng_eng[0x21] = 0;
+    rc = m3u_meng_step(&ext, 99, 0);
+    check(rc == 0 && meng_eng[0x21] == 1, "get_byno out-of-range returns 0 and sets endflag");
 
-    /* 10: re-clicking the same row keeps the handle (the play prompt and
-     * row re-picks re-enter here after the cwd moved to the drive root, so
-     * re-opening by name would fail); a different row releases it */
-    cls_before = classify_calls;
-    fs_n = 0;
-    v = click(&row_m3u, 5, 3);
-    check(v == 0 && classify_calls == cls_before, "same-row re-click: engine launch, no classifier");
-    check(VS->plh == 0x100, "same-row re-click: handle reused (no re-open)");
+    /* 10. Reversible Shuffle: visits every resolvable track, Prev reverses Next! */
     {
-        u32 k;
-        int saw_close = 0;
-        for (k = 0; k < fs_n; k++) {
-            if (fslog[k].op == 7 && fslog[k].a1 == 0x100) {
-                saw_close = 1;
-            }
+        u32 seen = 0, hist[4], i;
+        /* Test on a clean 4-entry all-valid playlist or verify reversibility on idk.m3u */
+        vs.shuf_key = 0;
+        vs.shuf_pos = 0;
+        meng_eng[0x23] = 1; /* Shuffle On */
+        meng_eng[0x39] = 0; /* Repeat Off */
+        for (i = 0; i < 4; i++) {
+            u32 r1 = m3u_meng_step(&ext, 0, 1);
+            if (!r1) break;
+            hist[i] = (u32)meng_vfs.cur_entry;
+            seen |= (1u << vs.pos);
         }
-        check(!saw_close, "same-row re-click: no close of the old handle");
-    }
-    check(REC_G == (u32)(unsigned long)&VS->rec[0] && rec_name_is(VS->rec, "Music/song one.mp3"),
-          "same-row re-click: track 0 re-served");
-
-    fs_n = 0;
-    click(&row_m3u, 6, 3);        /* idx = 3 -> empty.m3u: a different row */
-    check(VS->plh == 0, "different-row click: handle released");
-    {
-        u32 k;
-        int saw_close = 0;
-        for (k = 0; k < fs_n; k++) {
-            if (fslog[k].op == 7 && fslog[k].a1 == 0x100) {
-                saw_close = 1;
-            }
+        /* Step backward with Prev and verify exact reverse order! */
+        check(i >= 3 && seen != 0, "shuffle visits playlist tracks");
+        if (i >= 2) {
+            u32 b1 = m3u_meng_step(&ext, 0, 2);
+            check(b1 == 1 && (u32)meng_vfs.cur_entry == hist[i - 2],
+                  "shuffle prev reverses to the exact previous shuffled track");
         }
-        check(saw_close, "different-row click: old handle closed before the new open");
+        meng_eng[0x23] = 0;
     }
+    check(meng_vfs.open_count == 0, "mengine leaked 0 file handles across all steps");
 
-    puts_(fails ? "ALL FAIL\n" : "ALL PASS\n");
-    puts_("m3uplay test done, failures "); putu(fails); puts_("\n");
-    flush_out();
-#ifdef __mips__
-    done(fails ? 1 : 0);
-#else
-    done(fails ? 1 : 0);
-#endif
+    /* 11. Empty .m3u (idx = 2) and all-missing .m3u8 (idx = 3) fall back cleanly */
+    brow_vfs.cwd = 1;
+    rc = m3uplay_click((u32)(unsigned long)&r_m3u, 2, arg0);
+    check(rc == 5 && vs.magic == 0 && brow_vfs.cwd == 1 && brow_vfs.open_count == 0,
+          "empty.m3u falls back to class 5, disarmed, cwd preserved");
+    rc = m3uplay_click((u32)(unsigned long)&r_m3u8, 3, arg0);
+    check(rc == 5 && vs.magic == 0 && brow_vfs.cwd == 1 && brow_vfs.open_count == 0,
+          "all-missing broken.m3u8 falls back to class 5, cwd preserved");
+
+    /* 12. Clicking an ordinary .mp3 row disarms VS and delegates to classifier */
+    m3uplay_click((u32)(unsigned long)&r_m3u, 1, arg0);
+    check(vs.magic == M3UPLAY_MAGIC, "re-armed on idk.m3u");
+    rc = m3uplay_click((u32)(unsigned long)&r_mp3, 4, arg0);
+    check(rc == 0 && vs.magic == 0, "clicking .mp3 disarms VS and returns audio class 0");
+
+    /* 13. Selecting a different folder song in mengine set_location disarms VS */
+    m3uplay_click((u32)(unsigned long)&r_m3u, 1, arg0);
+    *(u32 *)(desc + 8) = 0xA000000Cu;   /* node 12 (03 - intro.flac), not cur_off! */
+    rc = sim_meng_setloc(desc);
+    check(rc == 1 && vs.magic == 0 && *(u16 *)(meng_eng + 0x26) == 2,
+          "selecting a non-playlist song in mengine disarms VS and keeps folder count");
+
+    printf("%s\nm3uplay test done, failures %u\n", fails ? "ALL FAIL" : "ALL PASS", fails);
     return fails ? 1 : 0;
 }
