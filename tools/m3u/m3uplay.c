@@ -1,132 +1,176 @@
-/* M3U play-on-click handler for browser.ap (bank 0x400D4C00 tail at 0x400D4CD0).
+/* Virtual-folder .m3u/.m3u8 click dispatcher + VFS track resolver for browser.ap
+ * (bank 0x400D4C00 zero tail at 0x400D4CD0, max 1840 bytes, window 0x40).
  *
- * Freestanding blob: no writable globals, no string literals, no libc.
+ * Calls window-0x48 helpers in m3u_brow.c (0x485946C0) via cross-bank pointers
+ * so neither window 0x40 nor window 0x48 ever swaps against itself.
  */
+#define M3U_BROWSER 1
 #include "m3uplay.h"
 
 #ifdef M3UPLAY_TEST
 extern fs_fn test_fs;
-extern u32 (*test_classify)(u32);
-extern u32 (*test_step_dir)(u32, u16);
-extern volatile u32 *test_ctxw;
-extern volatile u32 *test_maskw;
-extern volatile u16 *test_dircnt;
-extern volatile u8  *test_layerb;
-extern volatile u8  *test_diskb;
-#define FS_CALL   (test_fs)
-#define CLASSIFY  (test_classify)
-#define STEP_DIR  (test_step_dir)
-#define VFS_CTX   (*test_ctxw)
-#define BROW_MASK (*test_maskw)
-#define DIR_CNT   (*test_dircnt)
-#define CUR_LAYER (*test_layerb)
-#define CUR_DISK  (*test_diskb)
+extern void (*test_dialog)(u32, u32, u32);
+extern volatile struct brow_fsel *test_bf;
+extern u8 *test_brow_hdr;
+#define FS_CALL     (test_fs)
+#define DIALOG      (test_dialog)
+#define BF          (test_bf)
+#define BROW_HDR    (test_brow_hdr)
+#define CALL_OPEN   (m3u_vdir_open)
+#define CALL_FMT    (m3u_format_row)
 #else
-#define FS_CALL   ((fs_fn)0xBFC16A2Du)                  /* browser.ap module-0x11 VFS stub */
-#define CLASSIFY  ((u32 (*)(u32))0x40D14E01u)           /* stock classifier 0x40D14E00 */
-#define STEP_DIR  ((u32 (*)(u32, u16))0x780DB49Du)      /* stock dir stepper 0x780DB49C */
-#define VFS_CTX   (*(volatile u32 *)0x9FC15748u)        /* browser VFS context */
-#define BROW_MASK (*(volatile u32 *)0x9FC15750u)        /* active browser extension mask */
-#define DIR_CNT   (*(volatile u16 *)0x9FC157FCu)        /* subfolders in current dir */
-#define CUR_LAYER (*(volatile u8  *)0x9FC15736u)        /* current directory depth */
-#define CUR_DISK  (*(volatile u8  *)0x9FC1574Fu)        /* current disk letter (e.g. 'H') */
+#define FS_CALL     ((fs_fn)0xBFC16A2Du)
+#define DIALOG      ((void (*)(u32, u32, u32))0x48AD4A2Du)
+#define BF          ((volatile struct brow_fsel *)0x9FC15734u)
+#define BROW_HDR    ((u8 *)0x9FC15598u)
+#define CALL_OPEN   ((u32 (*)(u32, const u8 *, u8 *, u32 (*)(void)))M3U_SYM_OPEN)
+#define CALL_FMT    ((void (*)(const u8 *, u32, u8 *))M3U_SYM_FMT)
 #endif
+
+#define VFS_CTX         (BF->vfs_ctx)
+#define PL_DIR          (VD->pl_dir)
+#define PL_OFF          (VD->pl_off)
+#define PL_LAYER        (VD->pl_layer)
+#define LINE_BUF        (BW->line)
+#define format_vdir_row CALL_FMT
 
 #include "m3u_resolve.h"
 
-/* Row +0 carries the 4-byte extension ("M3U\0", "m3u\0", "M3U8", "m3u8"). */
-static int is_m3u_row(const u8 *r)
+static void copy_bytes(volatile void *dst, const volatile void *src, u32 n)
 {
-    return (r[0] | 0x20u) == 'm' && r[1] == '3' && (r[2] | 0x20u) == 'u'
-        && (r[3] == 0 || r[3] == ' ' || r[3] == '8');
+    volatile u8 *d = (volatile u8 *)dst;
+    const volatile u8 *s = (const volatile u8 *)src;
+    while (n--) {
+        *d++ = *s++;
+    }
 }
 
-u32 m3uplay_click(u32 row, u32 idx, u8 *arg0)
+static u32 scan_count_cb(void)
 {
-    u8 sec[512] __attribute__((aligned(4)));
-    volatile struct vstate *vs = VS;
-    u32 dirc;
-    u32 count, k, tries;
-    u32 ext = 0;
-    u8 layer = 0;
-    u8 *desc;
-    int ok = 0;
+    return m3u_scan_ex(BW->sec, 0xFFFFFFFFu, 0, 0);
+}
 
-    vs->magic = 0;
+u32 m3u_file_click(u8 *arg0, u8 *state)
+{
+    struct vdir_state *vd = VD;
+    volatile struct brow_fsel *bf = BF;
+    u8 *hdr = BROW_HDR;
+    u32 sel, list_no, skip, file_idx;
+    const u8 *row;
 
-    if (!is_m3u_row((const u8 *)row)) {
-        return CLASSIFY(row);
+    if (!state) {
+        return 0xFFFEu;
     }
-
-    dirc = DIR_CNT;
-    if (VFS_CTX == 0 || arg0 == 0 || idx <= dirc) {
-        goto fail_no_restore;
+    sel = *(const u16 *)(state + 0x10);
+    if (sel == 0 || sel >= 8u) {
+        return 0xFFFEu;
     }
-
-    if (!STEP_DIR(BROW_MASK, (u16)(idx - dirc))) {
-        goto fail_no_restore;
+    list_no = *(const u16 *)(state + 0x0E);
+    skip = (u32)(*(const u16 *)(hdr + 0x62)) + (u32)(*(const u16 *)(hdr + 0));
+    if (list_no <= skip) {
+        return 0xFFFEu;
     }
+    file_idx = list_no - skip;
+    row = hdr + sel * 12u;
 
-    if (!vfs((u32)vs->pl_dir, (u32)vs->pl_off, 0, OP_OFFSET)) {
-        goto fail_no_restore;
-    }
-    vs->pl_layer = CUR_LAYER;
-    vs->disk = CUR_DISK;
+    /* Case 1: Inside an open .m3u virtual folder -> play clicked track! */
+    if (vd->magic == M3UVD_MAGIC) {
+        volatile struct vstate *vs = VS;
+        u8 *sec = BW->sec;
+        u32 count = vd->count;
+        u32 start_k = file_idx - 1u;
+        u32 tries, k = count;
+        u32 ext = 0;
+        u8 layer = 0;
+        u8 *desc;
 
-    count = m3u_scan_entry(sec, 0xFFFFFFFFu);
-    if (count == 0 || count == 0xFFFFFFFFu) {
-        goto restore_out;
-    }
-    if (count > 0xFFFFu) {
-        count = 0xFFFFu;
-    }
-
-    tries = count < 16u ? count : 16u;
-    for (k = 0; k < tries; k++) {
-        u32 len = m3u_scan_entry(sec, k);
-        if (len != 0xFFFFFFFFu && m3u_resolve(len, &ext, &layer)) {
-            break;
+        if (bf->vfs_ctx == 0 || !arg0 || file_idx > count) {
+            goto play_fail_no_restore;
         }
-    }
-    if (k >= tries) {
-        goto restore_out;
-    }
-
-    arg0[0] = 0;
-    desc = arg0 + 4;
-    {
-        u32 j;
-        for (j = 0; j < 0xA4u / 4u; j++) {
-            ((u32 *)desc)[j] = 0;
+        for (tries = 0; tries < 16u && start_k + tries < count; tries++) {
+            u32 cand = start_k + tries;
+            u32 len = m3u_scan_ex(sec, cand, 0, 0);
+            if (len != 0xFFFFFFFFu && m3u_resolve(len, &ext, &layer)) {
+                k = cand;
+                break;
+            }
         }
-    }
-    if (!vfs((u32)(desc + 0x10), (u32)(desc + 8), 0, OP_OFFSET)) {
-        goto restore_out;
-    }
-    desc[0] = vs->disk;
-    desc[1] = layer;
-    *(u32 *)(desc + 4) = ext;
-    *(u16 *)(desc + 0x5C) = (u16)count;
-    *(u16 *)(desc + 0x5E) = (u16)(k + 1);
+        if (k >= count) {
+            goto play_restore_fail;
+        }
 
-    vs->cur_off[0] = *(const u32 *)(desc + 8);
-    vs->cur_off[1] = *(const u32 *)(desc + 12);
-    vs->pos = (u16)(k + 1);
-    vs->count = (u16)count;
-    vs->shuf_key = 0;
-    vs->shuf_pos = 0;
-    vs->magic = M3UPLAY_MAGIC;
-    ok = 1;
+        arg0[0] = 0;
+        desc = arg0 + 4;
+        {
+            u32 j;
+            for (j = 0; j < 0xA4u / 4u; j++) {
+                ((u32 *)desc)[j] = 0;
+            }
+        }
+        if (!vfs((u32)(desc + 0x10), (u32)(desc + 8), 0, OP_OFFSET)) {
+            goto play_restore_fail;
+        }
+        desc[0] = vd->disk;
+        desc[1] = layer;
+        *(u32 *)(desc + 4) = ext;
+        *(u16 *)(desc + 0x5C) = (u16)count;
+        *(u16 *)(desc + 0x5E) = (u16)(k + 1u);
+        bf->sel_item = (u16)file_idx;
 
-restore_out:
-    vfs((u32)vs->pl_dir, (u32)vs->pl_off, 1u, OP_OFFSET);
-    if (ok) {
+        vs->magic = 0;
+        copy_bytes(vs->pl_off, vd->pl_off, 84u);
+        vs->pl_layer = vd->pl_layer;
+        vs->disk = vd->disk;
+        vs->cur_off[0] = *(const u32 *)(desc + 8);
+        vs->cur_off[1] = *(const u32 *)(desc + 12);
+        vs->pos = (u16)(k + 1u);
+        vs->count = (u16)count;
+        vs->shuf_key = 0;
+        vs->shuf_pos = 0;
+        vs->magic = M3UPLAY_MAGIC;
+
+        vfs((u32)vd->pl_dir, (u32)vd->pl_off, 1u, OP_OFFSET);
         return 0x8001u;
-    }
-fail_no_restore:
+
+play_restore_fail:
+        vfs((u32)vd->pl_dir, (u32)vd->pl_off, 1u, OP_OFFSET);
+play_fail_no_restore:
 #ifdef M3UPLAY_PROBE
-    return 0;
+        return 0u;
 #else
-    return CLASSIFY(row);
+        DIALOG(0x8000u, 3u, 0x8019u);
+        return 0xFFFDu;
 #endif
+    }
+
+    /* Case 2: Normal folder, non-.m3u file -> stock Play/Delete prompt. */
+    if (!((row[0] | 0x20u) == 'm' && row[1] == '3' && (row[2] | 0x20u) == 'u'
+          && (row[3] == 0 || row[3] == ' ' || row[3] == '8'))) {
+        return 0xFFFEu;
+    }
+
+    /* Case 3: Normal folder, .m3u/.m3u8 row -> open as virtual folder! */
+    {
+        u32 rc = CALL_OPEN(file_idx, row, state, scan_count_cb);
+        if (rc == 0xFFFCu) {
+            DIALOG(0x8000u, 3u, 0x8018u);   /* stock "Empty folder!" */
+            return 0xFFFDu;
+        }
+        return rc;
+    }
+}
+
+u32 m3u_vdir_get_items(const u8 *req, u8 *row_out)
+{
+    u32 cnt, start;
+
+    if (!req || !row_out || BF->vfs_ctx == 0) {
+        return 0u;
+    }
+    cnt = req[1];
+    if (cnt == 0) {
+        return 1u;
+    }
+    start = *(const u16 *)(req + 2);
+    return m3u_scan_ex(BW->sec, start ? (start - 1u) : 0u, cnt, row_out);
 }

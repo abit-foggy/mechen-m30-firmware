@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
-"""Test the M3U play-on-click + mengine track-stepper patch.
+"""Test the virtual-folder M3U browser + mengine track-stepper patch.
 
 usage: test_m3uplay.py STOCK_BROWSER.ap [PATCHED_BROWSER.ap [STOCK_MENGINE.ap PATCHED_MENGINE.ap]]
 env:   CROSS, QEMU, HOSTCC, and from build.sh --test:
-       M30_PLAY_BIN, M30_PLAY_ELF, M30_MTRAMP_BIN, M30_MTRAMP_ELF, M30_MSTEP_BIN, M30_MSTEP_ELF
+       M30_PLAY_BIN, M30_PLAY_ELF, M30_BROW_BIN, M30_BROW_ELF,
+       M30_BTRAMP_BIN, M30_BTRAMP_ELF, M30_MTRAMP_BIN, M30_MTRAMP_ELF,
+       M30_MSTEP_BIN, M30_MSTEP_ELF
 
 Four parts:
   1. patch_m3uplay.py applied to temp copies of stock browser.ap + mengine.ap:
      all stock assertions hold and only the exact patch regions change.
   2. production blobs (when env vars are set): sizes, entry symbols, no
      writable data, and patched binary read-backs.
-  3. host -m32 run of m3uplaytest.c + m3uplay.c + m3u_meng.c against an
-     exFAT VFS mock (including <0x80 vfs_dir rejection, UTF-8/UTF-16LE,
-     long names, Repeat Off/All/One, Prev, Byno, and reversible Shuffle).
-  4. QEMU MIPS16e tests of BOTH real assembly trampolines:
-     - browser.ap 0x40D15194 -> m3uplay_tramp (0x400D4CD0): 0x8001 stores
-       4($s1) and jumps to loc_40D15200; class 0..5 returns to 0x40D15198.
-     - mengine.ap m3u_meng_tramp (0x7A053338): setloc arms/disarms COUNT/POS
-       and next/prev/byno dispatch to m3u_meng_step vs stock handlers.
+  3. host -m32 run of m3uplaytest.c + m3uplay.c + m3u_brow.c + m3u_meng.c
+     against the hardware-accurate exFAT VFS mock (boolean OP_READ + OP_SIZE,
+     0xAA trailing sector fill, multi-sector 7-row paging, Back, return from
+     music.ap, background VS isolation, and reversible Shuffle).
+  4. QEMU MIPS16e execution of ALL THREE real assembly trampolines:
+     - browser.ap 0x40D15108 -> m3uplay_tramp (0x400D4CD0)
+     - browser.ap m3u_brow_tramp (0x780DB7E0: setloc, del, items, dirop)
+     - mengine.ap m3u_meng_tramp (0x7A053338: setloc, next, prev, byno)
 """
 import os
 import struct
@@ -35,9 +37,12 @@ CFLAGS = ["-EL", "-mabi=32", "-march=mips32", "-mips16", "-Os", "-G0",
 HFLAGS = ["-EL", "-mabi=32", "-march=mips32", "-mno-mips16", "-O1", "-G0",
           "-mno-abicalls", "-fno-pic", "-ffreestanding", "-fno-builtin", "-nostdlib"]
 
-CLICK_FO, CLICK_NEW = 0x12894, bytes.fromhex("60183453")
+CLICK_FO, CLICK_NEW = 0x12808, bytes.fromhex("60183453")
+OLD_CLASSIFY_FO, OLD_CLASSIFY_STOCK = 0x12894, bytes.fromhex("811a8053")
 POOL_FO, POOL_STOCK = 0x4594, 0xBFC16A2D
-BLOB_FO, BLOB_MAX, TRAMP = 0x23D0, 0x730, 0x400D4CD0
+PLAY_FO, PLAY_MAX, TRAMP_VA = 0x23D0, 0x730, 0x400D4CD0
+BROW_FO, BROW_MAX, BROW_VA = 0x163C0, 0x540, 0x485946C0
+BTRAMP_FO, BTRAMP_VA, BTRAMP_MAX = 0x48E0, 0x780DB7E0, 0x220
 
 M_TRAMP_FO, M_TRAMP_VA, M_TRAMP_MAX = 0x5C38, 0x7A053338, 0xC8
 M_STEP_FO, M_STEP_VA, M_STEP_MAX = 0xCB00, 0x7B268000, 0x600
@@ -82,17 +87,23 @@ def main():
         )
 
     # ---- part 1: patch_m3uplay.py on temp copies of stock binaries --------
-    dummy_b = os.path.join(work, "dummy_b.bin")
+    dummy_p = os.path.join(work, "dummy_p.bin")
+    dummy_bc = os.path.join(work, "dummy_bc.bin")
+    dummy_bt = os.path.join(work, "dummy_bt.bin")
     dummy_mt = os.path.join(work, "dummy_mt.bin")
     dummy_ms = os.path.join(work, "dummy_ms.bin")
-    open(dummy_b, "wb").write(bytes(range(64)))
+    open(dummy_p, "wb").write(bytes(range(64)))
+    open(dummy_bc, "wb").write(bytes(range(48)))
+    open(dummy_bt, "wb").write(bytes(range(32)))
     open(dummy_mt, "wb").write(bytes(range(32)))
     open(dummy_ms, "wb").write(bytes(range(64)))
     out_b = os.path.join(work, "patched_b.ap")
     out_m = os.path.join(work, "patched_m.ap")
 
     args = [sys.executable, "-I", os.path.join(HERE, "patch_m3uplay.py"),
-            stock_brow, out_b, dummy_b, hex(TRAMP)]
+            stock_brow, out_b, dummy_p, hex(TRAMP_VA),
+            dummy_bc, hex(BROW_VA), dummy_bt,
+            hex(BTRAMP_VA), hex(BTRAMP_VA + 8), hex(BTRAMP_VA + 12), hex(BTRAMP_VA + 16)]
     if stock_meng:
         args += [stock_meng, out_m, dummy_mt, dummy_ms,
                  hex(M_TRAMP_VA), hex(M_TRAMP_VA + 8), hex(M_TRAMP_VA + 12), hex(M_TRAMP_VA + 16)]
@@ -102,10 +113,12 @@ def main():
         a = open(stock_brow, "rb").read()
         b = open(out_b, "rb").read()
         check(len(a) == len(b), "patched browser.ap keeps stock size")
-        check(b[CLICK_FO:CLICK_FO + 4] == CLICK_NEW, "click site 0x12894 = jal 0x400D4CD0")
+        check(b[CLICK_FO:CLICK_FO + 4] == CLICK_NEW, "click site 0x12808 = jal 0x400D4CD0")
+        check(b[OLD_CLASSIFY_FO:OLD_CLASSIFY_FO + 4] == OLD_CLASSIFY_STOCK, "classify site 0x12894 stays stock")
         check(struct.unpack_from("<I", b, POOL_FO)[0] == POOL_STOCK, "browser fetch pool stays stock")
-        check(b[BLOB_FO:BLOB_FO + 64] == bytes(range(64)), "browser blob written at file 0x23D0")
-        check(not any(b[BLOB_FO + 64:BLOB_FO + BLOB_MAX]), "rest of browser tail stays zero")
+        check(b[PLAY_FO:PLAY_FO + 64] == bytes(range(64)), "play blob written at file 0x23D0")
+        check(b[BROW_FO:BROW_FO + 48] == bytes(range(48)), "brow blob written at file 0x163C0")
+        check(b[BTRAMP_FO:BTRAMP_FO + 32] == bytes(range(32)), "brow tramp written at file 0x48E0")
         if stock_meng:
             am = open(stock_meng, "rb").read()
             bm = open(out_m, "rb").read()
@@ -114,24 +127,39 @@ def main():
             check(bm[M_STEP_FO:M_STEP_FO + 64] == bytes(range(64)), "mengine step at 0xCB00")
 
     r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "patch_m3uplay.py"),
-                        stock_brow, out_b, dummy_b, hex(0x400D4CD8)],
+                        stock_brow, out_b, dummy_p, hex(0x400D4CD8),
+                        dummy_bc, hex(BROW_VA), dummy_bt,
+                        hex(BTRAMP_VA), hex(BTRAMP_VA + 8), hex(BTRAMP_VA + 12), hex(BTRAMP_VA + 16)],
                        capture_output=True, text=True)
     check(r.returncode != 0, "patch tool rejects tramp address != 0x400D4CD0")
 
     # ---- part 2: production blobs & patched outputs -----------------------
     pbin, pelf = os.environ.get("M30_PLAY_BIN"), os.environ.get("M30_PLAY_ELF")
+    bbin, belf = os.environ.get("M30_BROW_BIN"), os.environ.get("M30_BROW_ELF")
+    btbin, btelf = os.environ.get("M30_BTRAMP_BIN"), os.environ.get("M30_BTRAMP_ELF")
     mtbin, mtelf = os.environ.get("M30_MTRAMP_BIN"), os.environ.get("M30_MTRAMP_ELF")
     msbin, mself = os.environ.get("M30_MSTEP_BIN"), os.environ.get("M30_MSTEP_ELF")
-    if pbin and pelf:
-        blob = open(pbin, "rb").read()
-        syms = nm_syms(pelf)
-        check(len(blob) <= BLOB_MAX, "browser blob fits (%d <= %d)" % (len(blob), BLOB_MAX))
-        check(syms.get("m3uplay_tramp") == TRAMP, "m3uplay_tramp at 0x400D4CD0")
-        check(no_writable(pelf), "browser blob has no writable data")
+    if pbin and pelf and bbin and belf and btbin and btelf:
+        play = open(pbin, "rb").read()
+        brow = open(bbin, "rb").read()
+        btramp = open(btbin, "rb").read()
+        psyms = nm_syms(pelf)
+        btsyms = nm_syms(btelf)
+        check(len(play) <= PLAY_MAX, "browser play blob fits (%d <= %d)" % (len(play), PLAY_MAX))
+        check(len(brow) <= BROW_MAX, "browser vdir blob fits (%d <= %d)" % (len(brow), BROW_MAX))
+        check(len(btramp) <= BTRAMP_MAX, "browser tramp fits (%d <= %d)" % (len(btramp), BTRAMP_MAX))
+        check(psyms.get("m3uplay_tramp") == TRAMP_VA, "m3uplay_tramp at 0x400D4CD0")
+        check(no_writable(pelf) and no_writable(belf) and no_writable(btelf),
+              "browser blobs have no writable data")
         if patched_brow:
             d = open(patched_brow, "rb").read()
-            check(d[CLICK_FO:CLICK_FO + 4] == CLICK_NEW, "built browser.ap: click site patched")
-            check(d[BLOB_FO:BLOB_FO + len(blob)] == blob, "built browser.ap: blob in place")
+            check(d[CLICK_FO:CLICK_FO + 4] == CLICK_NEW, "built browser.ap: click site 0x12808 patched")
+            check(d[PLAY_FO:PLAY_FO + len(play)] == play, "built browser.ap: play blob in place")
+            check(d[BROW_FO:BROW_FO + len(brow)] == brow, "built browser.ap: vdir blob in place")
+            check(d[BTRAMP_FO:BTRAMP_FO + len(btramp)] == btramp, "built browser.ap: tramp blob in place")
+            check(struct.unpack_from("<I", d, 0x46A4)[0] == (btsyms["m3u_b_setloc"] | 1)
+                  and struct.unpack_from("<I", d, 0x46D4)[0] == (btsyms["m3u_b_dirop"] | 1),
+                  "built browser.ap: fsel mode-0 table redirected")
     if mtbin and mtelf and msbin and mself:
         mt = open(mtbin, "rb").read()
         ms = open(msbin, "rb").read()
@@ -159,21 +187,26 @@ def main():
          "-o", "hosttest",
          os.path.join(HERE, "m3uplaytest.c"),
          os.path.join(HERE, "m3uplay.c"),
+         os.path.join(HERE, "m3u_brow.c"),
          os.path.join(HERE, "m3u_meng.c")], "host test compile")
     r = subprocess.run([os.path.join(work, "hosttest")], capture_output=True, timeout=60)
     out = r.stdout.decode("utf-8", "replace").splitlines()
-    check(r.returncode == 0 and any("ALL PASS" in l for l in out), "all host VFS + mengine scenarios passed")
+    check(r.returncode == 0 and any("ALL PASS" in l for l in out), "all host VFS + virtual-folder + mengine scenarios passed")
     for l in out:
         if l.startswith(("PASS", "FAIL", "ALL")):
             print("      " + l)
 
-    # ---- part 4: QEMU MIPS16e execution of real assembly trampolines ------
-    # Exercises m3uplay_tramp.S (both 0x8001 jump-to-done and class-0..5 return)
-    # and m3u_meng_tramp.S (setloc arm/disarm + next/prev/byno dispatch).
+    # ---- part 4: QEMU MIPS16e execution of ALL THREE assembly trampolines -
     run([CROSS + "gcc"] + CFLAGS +
-        ["-DM3UPLAY_TEST", "-DM3UPLAY_TEST_DESC=0x10001000", "-DM3UPLAY_TEST_DONE=0x40D15201",
+        ["-DM3UPLAY_TEST", "-DM3UPLAY_TEST_DONE=0x40D15201",
+         "-I" + HERE, "-x", "assembler-with-cpp", "-c", "-o", "ptramp.raw.o",
+         os.path.join(HERE, "m3uplay_tramp.S")], "QEMU ptramp asm")
+    run([CROSS + "objcopy", "--set-section-alignment", ".text=4", "ptramp.raw.o", "ptramp.o"], "ptramp align")
+
+    run([CROSS + "gcc"] + CFLAGS +
+        ["-DM3UPLAY_TEST", "-DM3UPLAY_TEST_VD=0x10001800",
          "-I" + HERE, "-x", "assembler-with-cpp", "-c", "-o", "btramp.raw.o",
-         os.path.join(HERE, "m3uplay_tramp.S")], "QEMU btramp asm")
+         os.path.join(HERE, "m3u_brow_tramp.S")], "QEMU btramp asm")
     run([CROSS + "objcopy", "--set-section-alignment", ".text=4", "btramp.raw.o", "btramp.o"], "btramp align")
 
     run([CROSS + "gcc"] + CFLAGS +
@@ -193,21 +226,26 @@ def main():
 fake_disp:
 \tsave\t0x38, $ra, $s0, $s1
 \taddiu\t$s1, $sp, 0x10
-\tsw\t$a1, 0x28($s1)
-\tsw\t$a2, 0x2C($s1)
+\tsw\t$a0, 0x28($s1)
+\tsw\t$a1, 0x2C($s1)
 \tli\t$v0, 0
 \tsh\t$v0, 4($s1)
 \tsb\t$v0, 6($s1)
-\t.org\t0x94
-\t/* 0x40D15194: exact patched click-site jal 0x400D4CD0 */
+\t.org\t0x28
+\t/* 0x40D15108: exact patched file-click jal 0x400D4CD0 */
 \t.byte\t0x60, 0x18, 0x34, 0x53
 \tnop
-\t/* returned normally (class 0..5): store 0x60 + class into 4($s1) */
-\taddiu\t$v0, 0x60
+\t/* 0x40D1510E: sh $v0, 4($s1); lhu $v0, 4($s1); beqz $v0, 0x40D15200 */
 \tsh\t$v0, 4($s1)
-\t.org\t0x100
-\t/* 0x40D15200: loc_40D15200 */
 \tlhu\t$v0, 4($s1)
+\tbeqz\t$v0, 1f
+\taddiu\t$v0, 0x10
+\tsh\t$v0, 4($s1)
+\t.org\t0x120
+1:\tlhu\t$v0, 4($s1)
+\tlbu\t$v1, 6($s1)
+\tsll\t$v1, 16
+\tor\t$v0, $v1
 \tmove\t$sp, $s1
 \trestore\t0x28, $ra, $s0, $s1
 \tjrc\t$ra
@@ -219,9 +257,33 @@ fake_disp:
         f.write("""#include "m3uplay.h"
 #define ST ((volatile u32 *)0x10003000u)
 __attribute__((section(".r4_stubs")))
-u32 m3uplay_click(u32 row, u32 idx, u8 *arg0) {
-    (void)row; ST[1] = idx; ST[2] = (u32)arg0; return ST[0];
+u32 m3u_file_click(u8 *arg0, u8 *state) {
+    ST[1] = (u32)arg0; ST[2] = (u32)state; return ST[0];
 }
+__attribute__((section(".r4_stubs")))
+u32 m3u_test_stock_prompt(u8 *arg0, u8 *state) {
+    ST[4] = (u32)arg0 ^ (u32)state; return 0x801Eu;
+}
+__attribute__((section(".r4_stubs")))
+u32 m3u_vdir_get_items(const u8 *req, u8 *out) {
+    (void)req; (void)out; ST[5] = 777; return 1;
+}
+__attribute__((section(".r4_stubs")))
+u32 m3u_vdir_setloc(const u8 *loc, u32 f) {
+    (void)loc; (void)f; return ST[6];
+}
+__attribute__((section(".r4_stubs")))
+u32 m3u_vdir_dir_op(u32 cmd, u32 idx, u8 *out) {
+    ST[7] = (cmd << 8) | idx; ST[8] = (u32)out; return ST[6];
+}
+__attribute__((section(".r7_stubs")))
+u32 m3u_test_b_stock_setloc(const u8 *l, u32 f) { (void)l; ST[5] = 200 + f; return 1; }
+__attribute__((section(".r7_stubs")))
+u32 m3u_test_b_stock_del(u32 a, u32 b, u8 *c) { (void)a; (void)b; (void)c; ST[5] = 210; return 1; }
+__attribute__((section(".r7_stubs")))
+u32 m3u_test_b_stock_items(const u8 *r, u8 *o) { (void)r; (void)o; ST[5] = 220; return 1; }
+__attribute__((section(".r7_stubs")))
+u32 m3u_test_b_stock_dirop(u32 c, u32 i, u8 *o) { ST[5] = 300 + c * 10 + i; ST[9] = (u32)o; return 1; }
 __attribute__((section(".r7_stubs")))
 u32 m3u_test_stock_setloc(u8 *d, u32 b) {
     (void)d; (void)b;
@@ -252,7 +314,11 @@ static long sys3(long n, long a, long b, long c) {
         "t0","t1","t2","t3","t4","t5","t6","t7","t8","t9","hi","lo");
     return v0;
 }
-extern u32 fake_disp(u32 row, u8 *arg0, u8 *state);
+extern u32 fake_disp(u8 *arg0, u8 *state);
+extern u32 m3u_b_setloc(const u8 *l, u32 f);
+extern u32 m3u_b_del(u32 a, u32 b, u8 *c);
+extern u32 m3u_b_items(const u8 *r, u8 *o);
+extern u32 m3u_b_dirop(u32 c, u32 i, u8 *o);
 extern u32 m3u_setloc_0(u8 *desc, u32 b);
 extern u32 m3u_next_0(u32 *o);
 extern u32 m3u_prev_0(u32 *o);
@@ -260,28 +326,52 @@ extern u32 m3u_byno_0(u32 *o, u32 n);
 
 void _start(void) {
     static u8 state[32], arg0[0xA8] __attribute__((aligned(4)));
+    volatile u32 *vd_magic = (volatile u32 *)0x10001800u;
     volatile struct vstate *vs = (volatile struct vstate *)0x10002000u;
-    u32 (*disp)(u32, u8 *, u8 *) = (u32 (*)(u32, u8 *, u8 *))((u32)fake_disp | 1u);
+    u32 (*disp)(u8 *, u8 *) = (u32 (*)(u8 *, u8 *))((u32)fake_disp | 1u);
+    u32 (*bset)(const u8 *, u32) = (u32 (*)(const u8 *, u32))((u32)m3u_b_setloc | 1u);
+    u32 (*bdel)(u32, u32, u8 *) = (u32 (*)(u32, u32, u8 *))((u32)m3u_b_del | 1u);
+    u32 (*bitm)(const u8 *, u8 *) = (u32 (*)(const u8 *, u8 *))((u32)m3u_b_items | 1u);
+    u32 (*bdir)(u32, u32, u8 *) = (u32 (*)(u32, u32, u8 *))((u32)m3u_b_dirop | 1u);
     u32 (*setloc)(u8 *, u32) = (u32 (*)(u8 *, u32))((u32)m3u_setloc_0 | 1u);
     u32 (*nextf)(u32 *) = (u32 (*)(u32 *))((u32)m3u_next_0 | 1u);
     u32 (*prevf)(u32 *) = (u32 (*)(u32 *))((u32)m3u_prev_0 | 1u);
     u32 (*bynof)(u32 *, u32) = (u32 (*)(u32 *, u32))((u32)m3u_byno_0 | 1u);
     u32 r;
 
-    *(volatile u16 *)(0x10001000u + 2) = 3; /* desc->count = 3 */
-    *(u16 *)(state + 0xE) = 8;              /* list_no = 8 -> idx = 5 */
-
-    /* Case A: 0x8001 jumps directly to loc_40D15200 with 4($s1) = 0x8001 */
+    /* 1. m3uplay_tramp: 0x8001 (launch), 0 (vdir open), 0xFFFD (popup), 0xFFFE (stock prompt) */
     ST[0] = 0x8001u;
-    r = disp(0x1234, arg0, state);
-    if (r != 0x8001u || ST[1] != 5 || ST[2] != (u32)arg0) sys3(4001, 11, 0, 0);
+    r = disp(arg0, state);
+    if (r != 0x8001u || ST[1] != (u32)arg0 || ST[2] != (u32)state) sys3(4001, 11, 0, 0);
 
-    /* Case B: class 5 returns to 0x40D15198 -> 0x60 + 5 = 0x65 */
-    ST[0] = 5;
-    r = disp(0x1234, arg0, state);
-    if (r != 0x65u) sys3(4001, 12, 0, 0);
+    ST[0] = 0u;
+    r = disp(arg0, state);
+    if (r != 0u) sys3(4001, 12, 0, 0);
 
-    /* Case C: mengine tramp armed: setloc overrides COUNT/POS and next/prev/byno call step */
+    ST[0] = 0xFFFDu;
+    r = disp(arg0, state);
+    if (r != 0x00010000u) sys3(4001, 13, 0, 0);
+
+    ST[0] = 0xFFFEu; ST[4] = 0;
+    r = disp(arg0, state);
+    if (r != 0x802Eu || ST[4] != ((u32)arg0 ^ (u32)state)) sys3(4001, 14, 0, 0);
+
+    /* 2. m3u_brow_tramp: inactive VD -> stock; active VD -> virtual handlers */
+    *vd_magic = 0;
+    ST[6] = 0xFFFEu; bset(arg0, 3); if (ST[5] != 203) sys3(4001, 21, 0, 0);
+    if (bdel(1, 2, arg0) != 1 || ST[5] != 210) sys3(4001, 22, 0, 0);
+    bitm(arg0, state); if (ST[5] != 220) sys3(4001, 23, 0, 0);
+    bdir(1, 4, arg0); if (ST[5] != 314) sys3(4001, 24, 0, 0);
+
+    *vd_magic = M3UVD_MAGIC;
+    ST[6] = 1u; if (bset(arg0, 0) != 1) sys3(4001, 25, 0, 0);
+    if (bdel(1, 2, arg0) != 0) sys3(4001, 26, 0, 0);
+    bitm(arg0, state); if (ST[5] != 777) sys3(4001, 27, 0, 0);
+    ST[6] = 1u; if (bdir(0, 0, state) != 1 || ST[7] != 0) sys3(4001, 28, 0, 0);
+    ST[6] = 0xFFFEu; bdir(2, 0, state); if (ST[5] != 300 || ST[9] != (u32)state) sys3(4001, 29, 0, 0);
+    ST[6] = 0xFFFDu; bdir(3, 5, state); if (ST[5] != 335 || ST[9] != (u32)state) sys3(4001, 30, 0, 0);
+
+    /* 3. m3u_meng_tramp: setloc arm/disarm + next/prev/byno */
     vs->magic = M3UPLAY_MAGIC;
     vs->count = 78;
     vs->pos = 1;
@@ -290,19 +380,15 @@ void _start(void) {
     *(u32 *)(arg0 + 4 + 8) = 0x11223344u;
     *(u32 *)(arg0 + 4 + 12) = 0x55667788u;
     setloc(arg0 + 4, 0);
-    if (*(volatile u16 *)0x10002226u != 78 || *(volatile u16 *)0x10002224u != 1) sys3(4001, 13, 0, 0);
+    if (*(volatile u16 *)0x10002226u != 78 || *(volatile u16 *)0x10002224u != 1) sys3(4001, 31, 0, 0);
+    nextf(0); if (ST[3] != 110) sys3(4001, 32, 0, 0);
+    prevf(0); if (ST[3] != 120) sys3(4001, 33, 0, 0);
+    bynof(0, 7); if (ST[3] != 107) sys3(4001, 34, 0, 0);
 
-    nextf(0); if (ST[3] != 110) sys3(4001, 14, 0, 0);
-    prevf(0); if (ST[3] != 120) sys3(4001, 15, 0, 0);
-    bynof(0, 7); if (ST[3] != 107) sys3(4001, 16, 0, 0);
-
-    /* Case D: non-matching song in setloc disarms VS -> next/prev/byno go to stock */
     *(u32 *)(arg0 + 4 + 8) = 0x99999999u;
     setloc(arg0 + 4, 0);
-    if (vs->magic != 0 || *(volatile u16 *)0x10002226u != 2) sys3(4001, 17, 0, 0);
-    nextf(0); if (ST[3] != 10) sys3(4001, 18, 0, 0);
-    prevf(0); if (ST[3] != 20) sys3(4001, 19, 0, 0);
-    bynof(0, 4); if (ST[3] != 34) sys3(4001, 20, 0, 0);
+    if (vs->magic != 0 || *(volatile u16 *)0x10002226u != 2) sys3(4001, 35, 0, 0);
+    nextf(0); if (ST[3] != 10) sys3(4001, 36, 0, 0);
 
     sys3(4004, 1, (long)"QEMU OK\\n", 8);
     sys3(4001, 0, 0, 0);
@@ -320,9 +406,11 @@ SECTIONS {
     . = 0x10001000;
     .testram : { disp.o(.testram) }
     . = 0x400D4CD0;
-    .btramp : { btramp.o(.text) qstubs.o(.r4_stubs) }
-    . = 0x40D15100;
+    .ptramp : { ptramp.o(.text) qstubs.o(.r4_stubs) }
+    . = 0x40D150E0;
     .disp : { disp.o(.disp_sec) }
+    . = 0x780DB7E0;
+    .btramp : { btramp.o(.text) }
     . = 0x7A053338;
     .mtramp : { mtramp.o(.text) }
     . = 0x7B268000;
@@ -331,12 +419,14 @@ SECTIONS {
 }
 """)
     run([CROSS + "ld", "-EL", "-m", "elf32ltsmip", "-T", qld, "-o", "qtest.elf",
-         "qtest.o", "btramp.o", "disp.o", "mtramp.o", "qstubs.o"], "QEMU link")
+         "qtest.o", "ptramp.o", "btramp.o", "disp.o", "mtramp.o", "qstubs.o"], "QEMU link")
     r = subprocess.run([QEMU, "-cpu", "24Kc", "./qtest.elf"], cwd=work,
                        capture_output=True, timeout=60)
     check(r.returncode == 0 and r.stdout.startswith(b"QEMU OK"),
-          "QEMU MIPS16e trampolines (browser + mengine) passed (rc=%d, out=%r)" % (r.returncode, r.stdout))
+          "QEMU MIPS16e trampolines (click + browser fsel + mengine) passed (rc=%d, out=%r)" % (r.returncode, r.stdout))
 
+    import shutil
+    shutil.rmtree(work, ignore_errors=True)
     print("test_m3uplay: %s" % ("OK" if rc == 0 else "FAILED"))
     return rc
 

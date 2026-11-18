@@ -166,10 +166,17 @@ if [ $M3UHOOK = 1 ]; then
 fi
 
 if [ $M3UPLAY = 1 ]; then
-  echo "== browser.ap + mengine.ap: M3U play-on-click + track stepper"
+  echo "== browser.ap + mengine.ap: virtual-folder M3U browser + track stepper"
+  blob m3u_brow "$T/m3u/m3u_brow.c" 0x485946c0 -I"$T/m3u"
+  [ "$(stat -c %s m3u_brow.bin)" -le $((0x540)) ] || { echo "m3u_brow blob too big: $(stat -c %s m3u_brow.bin) > 0x540"; exit 1; }
+  SYM_OPEN=$(( 0x$(sym m3u_brow.elf m3u_vdir_open) | 1 ))
+  SYM_FMT=$(( 0x$(sym m3u_brow.elf m3u_format_row) | 1 ))
+  SYM_BSET=$(( 0x$(sym m3u_brow.elf m3u_vdir_setloc) | 1 ))
+  SYM_BDIR=$(( 0x$(sym m3u_brow.elf m3u_vdir_dir_op) | 1 ))
+
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
-  "${CROSS}gcc" $CFLAGS $PROBE_DEF -I"$T/m3u" -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
+  "${CROSS}gcc" $CFLAGS $PROBE_DEF -I"$T/m3u" -DM3U_SYM_OPEN=$SYM_OPEN -DM3U_SYM_FMT=$SYM_FMT -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay.raw.o m3uplay.o
   printf 'SECTIONS { . = 0x400D4CD0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3uplay.ld
   printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3uplay.ld
@@ -178,6 +185,17 @@ if [ $M3UPLAY = 1 ]; then
   "${CROSS}objcopy" -O binary -j .text m3uplay.elf m3uplay.bin
   [ "$(sym m3uplay.elf m3uplay_tramp)" = "400d4cd0" ] || { echo "m3uplay_tramp is not at 0x400D4CD0: $(sym m3uplay.elf m3uplay_tramp)"; exit 1; }
   [ "$(stat -c %s m3uplay.bin)" -le $((0x730)) ] || { echo "m3uplay blob too big for the bank tail: $(stat -c %s m3uplay.bin) > 0x730"; exit 1; }
+  SYM_BITM=$(( 0x$(sym m3uplay.elf m3u_vdir_get_items) | 1 ))
+
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -DM3U_SYM_SETLOC=$SYM_BSET -DM3U_SYM_ITEMS=$SYM_BITM -DM3U_SYM_DIROP=$SYM_BDIR \
+    -x assembler-with-cpp -c -o m3u_brow_tramp.raw.o "$T/m3u/m3u_brow_tramp.S"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3u_brow_tramp.raw.o m3u_brow_tramp.o
+  printf 'SECTIONS { . = 0x780DB7E0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3u_brow_tramp.ld
+  printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3u_brow_tramp.ld
+  "${CROSS}ld" -EL -m elf32ltsmip -T m3u_brow_tramp.ld -e m3u_b_setloc -o m3u_brow_tramp.elf m3u_brow_tramp.o
+  [ -z "$("${CROSS}size" -A m3u_brow_tramp.elf | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "m3u_brow_tramp: has writable data"; exit 1; }
+  "${CROSS}objcopy" -O binary -j .text m3u_brow_tramp.elf m3u_brow_tramp.bin
+  [ "$(stat -c %s m3u_brow_tramp.bin)" -le $((0x220)) ] || { echo "m3u_brow_tramp too big: $(stat -c %s m3u_brow_tramp.bin) > 0x220"; exit 1; }
 
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3u_meng_tramp.raw.o "$T/m3u/m3u_meng_tramp.S"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3u_meng_tramp.raw.o m3u_meng_tramp.o
@@ -193,6 +211,9 @@ if [ $M3UPLAY = 1 ]; then
   [ "$(stat -c %s m3u_meng.bin)" -le $((0x600)) ] || { echo "m3u_meng blob too big: $(stat -c %s m3u_meng.bin) > 0x600"; exit 1; }
 
   "$PY" -I "$T/m3u/patch_m3uplay.py" browser.ap browser.ap m3uplay.bin 0x400d4cd0 \
+    m3u_brow.bin 0x485946c0 m3u_brow_tramp.bin \
+    0x$(sym m3u_brow_tramp.elf m3u_b_setloc) 0x$(sym m3u_brow_tramp.elf m3u_b_del) \
+    0x$(sym m3u_brow_tramp.elf m3u_b_items) 0x$(sym m3u_brow_tramp.elf m3u_b_dirop) \
     mengine.ap mengine.ap m3u_meng_tramp.bin m3u_meng.bin \
     0x$(sym m3u_meng_tramp.elf m3u_setloc_0) 0x$(sym m3u_meng_tramp.elf m3u_byno_0) \
     0x$(sym m3u_meng_tramp.elf m3u_prev_0) 0x$(sym m3u_meng_tramp.elf m3u_next_0) | sed 's/^/   /'
@@ -362,6 +383,8 @@ if [ $TEST = 1 ]; then
   fi
   if [ $M3UPLAY = 1 ]; then
     M30_PLAY_BIN=$PWD/m3uplay.bin M30_PLAY_ELF=$PWD/m3uplay.elf \
+    M30_BROW_BIN=$PWD/m3u_brow.bin M30_BROW_ELF=$PWD/m3u_brow.elf \
+    M30_BTRAMP_BIN=$PWD/m3u_brow_tramp.bin M30_BTRAMP_ELF=$PWD/m3u_brow_tramp.elf \
     M30_MTRAMP_BIN=$PWD/m3u_meng_tramp.bin M30_MTRAMP_ELF=$PWD/m3u_meng_tramp.elf \
     M30_MSTEP_BIN=$PWD/m3u_meng.bin M30_MSTEP_ELF=$PWD/m3u_meng.elf \
       CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/test_m3uplay.py" "$F/browser.ap" browser.ap "$F/mengine.ap" mengine.ap > test_m3uplay.txt 2>&1 || true
