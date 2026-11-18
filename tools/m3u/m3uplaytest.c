@@ -277,8 +277,9 @@ int main(void)
     check(VS->base == 2, "base = list_no - count = 2");
     check(VS->count == 2, "playlist counted (2 entries)");
     check(REC_G == (u32)(unsigned long)&VS->rec[0], "track 0 record published to REC_G");
-    check(VS->rec[0] == 0 && *(volatile u32 *)(VS->rec + 4) == (u32)(unsigned long)(VS->rec + 0x10),
-          "record layout: attr 0, name ptr -> rec+0x10");
+    check(*(volatile u32 *)(VS->rec + 0) == 2
+          && *(volatile u32 *)(VS->rec + 4) == (u32)(unsigned long)(VS->rec + 0x10),
+          "record layout: entry id at +0 (base), name ptr -> rec+0x10");
     check(rec_name_is(VS->rec, "Music/song one.mp3"), "track 0 name in record (../ stripped)");
     check(VS->plh == 0x100, "playlist handle kept open in vstate");
     check(*(volatile u32 *)(VS->name + 4) == 1, "root mode latched (first entry ../)");

@@ -66,13 +66,16 @@ static int name_is_m3u(const volatile u8 *nm)
         }
         i++;
     }
-    /* match the ".m3u" / ".m3u8" suffix from the NUL anchor ('.', '3', '8'
-     * are fold-invariant, so | 0x20 on every char is safe) */
+    if (i < 4) {
+        return 0;
+    }
+    /* ".m3u" only, from the NUL anchor ('.', '3' are fold-invariant; 'm'/'u'
+     * fold via | 0x20). ".m3u8" acceptance is dropped to fit the blob's
+     * 0x730-byte budget - a .m3u8 click then takes the stock classifier
+     * path exactly as an unpatched firmware does. */
     nm += 2 * i;
-    return (nm[-8] == '.' && (nm[-6] | 0x20) == 'm' && nm[-4] == '3'
-                && (nm[-2] | 0x20) == 'u')
-        || (i >= 5 && nm[-10] == '.' && (nm[-8] | 0x20) == 'm'
-                && nm[-6] == '3' && (nm[-4] | 0x20) == 'u' && nm[-2] == '8');
+    return nm[-8] == '.' && (nm[-6] | 0x20) == 'm' && nm[-4] == '3'
+        && (nm[-2] | 0x20) == 'u';
 }
 
 /* ---- copy the record's name into vstate->name ---------------------------
@@ -257,6 +260,11 @@ static u32 playlist_walk(u32 want, u8 *rec)
             for (k = 0; k < 0x100 / 4; k++) {
                 ((volatile u32 *)rp)[k] = 0;
             }
+            /* The engine resolves the file through the record before it
+             * opens anything: sys(rec, op 0x11), then rec[0] (op 0x13), then
+             * the name at rec+4 (op 0x14). A zeroed +0 selects no entry, so
+             * carry the .m3u's own valid dir-stream index (VS->base). */
+            *(volatile u32 *)(rec + 0) = VS->base;
             *(volatile u32 *)(rec + 4) = (u32)(rec + 0x10);  /* name ptr */
             nm = (volatile u8 *)(rec + 0x10);
             nm[0] = 0xFF;
