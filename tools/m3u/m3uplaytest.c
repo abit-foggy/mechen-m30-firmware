@@ -337,6 +337,41 @@ int main(void)
           "op!=1 call passes through with identical args");
     check(v == 0, "op!=1 returns the real fs result unchanged");
 
+    /* 10: re-clicking the same row keeps the handle (the play prompt and
+     * row re-picks re-enter here after the cwd moved to the drive root, so
+     * re-opening by name would fail); a different row releases it */
+    cls_before = classify_calls;
+    fs_n = 0;
+    v = click(&row_m3u, 5, 3);
+    check(v == 0 && classify_calls == cls_before, "same-row re-click: engine launch, no classifier");
+    check(VS->plh == 0x100, "same-row re-click: handle reused (no re-open)");
+    {
+        u32 k;
+        int saw_close = 0;
+        for (k = 0; k < fs_n; k++) {
+            if (fslog[k].op == 7 && fslog[k].a1 == 0x100) {
+                saw_close = 1;
+            }
+        }
+        check(!saw_close, "same-row re-click: no close of the old handle");
+    }
+    check(REC_G == (u32)(unsigned long)&VS->rec[0] && rec_name_is(VS->rec, "Music/song one.mp3"),
+          "same-row re-click: track 0 re-served");
+
+    fs_n = 0;
+    click(&row_m3u, 6, 3);        /* idx = 3 -> empty.m3u: a different row */
+    check(VS->plh == 0, "different-row click: handle released");
+    {
+        u32 k;
+        int saw_close = 0;
+        for (k = 0; k < fs_n; k++) {
+            if (fslog[k].op == 7 && fslog[k].a1 == 0x100) {
+                saw_close = 1;
+            }
+        }
+        check(saw_close, "different-row click: old handle closed before the new open");
+    }
+
     puts_(fails ? "ALL FAIL\n" : "ALL PASS\n");
     puts_("m3uplay test done, failures "); putu(fails); puts_("\n");
     flush_out();

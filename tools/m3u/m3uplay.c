@@ -47,7 +47,6 @@ static u32 fallback(u32 row) { return CLASSIFY(row); }
 #define OP_SEEK  0xB
 #define OP_READ  0xD
 
-static long fs_open(const volatile u8 *name16) { return FS_CALL(FSCTX, (u32)name16, 0, 0, OP_OPEN); }
 
 /* ---- m3u test on a UTF-16LE name (BOM optional) --------------------------
  * The file's record name always carries the extension, so test the name
@@ -93,16 +92,17 @@ static int copy_name(const u8 *nm)
     d[0] = 0xFF;
     d[1] = 0xFE;
     d += 2;
-    for (j = 0; 2 + 2 * j + 1 < VS_NAME_MAX; j++) {
+    for (j = 0; 2 + 2 * j + 1 < VS_NAME_MAX; j++, s += 2, d += 2) {
         u8 lo = s[0];
         u8 hi = s[1];
         d[0] = lo;
         d[1] = hi;
         if (lo == 0 && hi == 0) {
-            return 0;                   /* NUL terminates; stale bytes unread */
+            d[2] = 0;
+            d[3] = 0;                   /* complete the double NUL: a shorter
+                                           name must leave no stale tail bytes */
+            return 0;
         }
-        s += 2;
-        d += 2;
     }
     return -1;                          /* too long */
 }
@@ -182,7 +182,7 @@ static int pl_open(u32 *hout)
         *hout = VS->plh;
         return 0;
     }
-    h = fs_open(VS->name);
+    h = FS_CALL(FSCTX, (u32)VS->name, 0, 0, OP_OPEN);   /* fs_open, inlined */
     if (h <= 0) {
         return -1;
     }
@@ -306,7 +306,13 @@ u32 m3uplay_click(u32 row, u32 idx)
     u32 rec;
     u32 count;
 
-    pl_close();                         /* a playlist left open: release it */
+    /* Re-clicking the same row (the play prompt re-enters here, or the user
+     * picks the row again) must keep the handle: after the cd to the drive
+     * root the m3u's own relative name can no longer be re-opened. A click
+     * on a different row releases the old playlist first. */
+    if (VS->magic != M3UPLAY_MAGIC || idx != VS->base) {
+        pl_close();
+    }
     VS->flag = 0;                       /* every file click resets serving */
     FETCHFN(idx, 0);                    /* flag==0: real fetch, publishes the row's record */
     rec = REC_G;
