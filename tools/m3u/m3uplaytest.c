@@ -297,15 +297,6 @@ static u32 mock_rand(void)
 }
 u32 (*test_meng_rand)(void) = mock_rand;
 
-static u32 dialog_calls, last_dialog_id;
-static void mock_dialog(u32 a, u32 b, u32 id)
-{
-    (void)a; (void)b;
-    dialog_calls++;
-    last_dialog_id = id;
-}
-void (*test_dialog)(u32, u32, u32) = mock_dialog;
-
 static u32 mock_step_dir(u32 mask, u16 n)
 {
     u32 cmd = DIR_HEAD;
@@ -414,10 +405,9 @@ int main(void)
     *(u16 *)(state + 0x0E) = 4;     /* list_no = 1 (spec) + 2 (dirs) + 1 (idk.m3u) */
     *(u16 *)(state + 0x10) = 3;     /* sel = row 3 */
     memset(state + 0x14, 0, 3);
-    dialog_calls = 0;
 
     rc = m3u_file_click(arg0, state);
-    check(rc == 0 && dialog_calls == 0,
+    check(rc == 0,
           "clicking idk.m3u opens virtual folder directly (rc=0, no Play/Delete prompt)");
     check(bw.vd.magic == M3UVD_MAGIC && bw.vd.count == 9 && bw.vd.pl_layer == 1 && bw.vd.disk == 'H',
           "VD populated: magic=M3VD, count=9 tracks across 3 sectors, pl_layer=1");
@@ -460,7 +450,7 @@ int main(void)
     *(u16 *)(state + 0x0E) = 1;     /* list_no = 1 */
     *(u16 *)(state + 0x10) = 1;     /* sel = 1 */
     rc = m3u_file_click(arg0, state);
-    check(rc == 0x8001u && dialog_calls == 0,
+    check(rc == 0x8001u,
           "clicking track #1 inside virtual .m3u returns 0x8001 immediately");
     check(vs.magic == M3UPLAY_MAGIC && vs.count == 9 && vs.pos == 1
           && desc[0] == 'H' && desc[1] == 3
@@ -566,29 +556,27 @@ int main(void)
     check(rc == 0xFFFEu && bw.vd.magic == 0,
           "m3u_vdir_setloc returns 0xFFFE and clears VD for non-playlist track");
 
-    /* 9. Empty .m3u -> Empty folder dialog (0x8018); all-missing .m3u8 -> format error on track click (0x8019) */
+    /* 9. Empty .m3u -> 0x8018 (Empty folder); all-missing .m3u8 -> 0x8019 (Format error) */
     brow_vfs.cwd = 1;
     setup_playlists_hdr(brow_hdr, &bf, title_buf, row_names);
     memcpy(brow_hdr + 1 * 12, "m3u\0", 4);
     *(u16 *)(state + 0x0E) = 5; /* file #2 = empty.m3u */
     *(u16 *)(state + 0x10) = 1;
-    dialog_calls = 0;
     rc = m3u_file_click(arg0, state);
-    check(rc == 0xFFFDu && dialog_calls == 1 && last_dialog_id == 0x8018u && bw.vd.magic == 0,
-          "clicking empty.m3u shows 'Empty folder!' (0x8018) and stays in Playlists/");
+    check(rc == 0x8018u && bw.vd.magic == 0,
+          "clicking empty.m3u returns 0x8018 ('Empty folder!') and stays in Playlists/");
 
     memcpy(brow_hdr + 1 * 12, "M3U8", 4);
-    write_utf16_bom(row_names[0], "broken.m3u8", 25);
     *(u16 *)(state + 0x0E) = 6; /* file #3 = broken.m3u8 */
     rc = m3u_file_click(arg0, state);
-    check(rc == 0 && bw.vd.magic == M3UVD_MAGIC && bw.vd.count == 2,
-          "clicking broken.m3u8 opens its 2-entry virtual folder");
+    check(rc == 0 && bw.vd.magic == M3UVD_MAGIC && bw.vd.count == 2
+          && utf16_eq_utf8(title_buf, "broken.m3u8", 23),
+          "clicking broken.m3u8 opens its 2-entry virtual folder with VFS title");
     *(u16 *)(brow_hdr + 0x62) = 0;
     *(u16 *)(state + 0x0E) = 1;
-    dialog_calls = 0;
     rc = m3u_file_click(arg0, state);
-    check(rc == 0xFFFDu && dialog_calls == 1 && last_dialog_id == 0x8019u,
-          "clicking unresolvable track inside broken.m3u8 shows 'File format not supported!' (0x8019)");
+    check(rc == 0x8019u,
+          "clicking unresolvable track inside broken.m3u8 returns 0x8019 ('File format not supported!')");
 
     /* 10. Root reset (cmd=3) + ordinary .mp3 click in normal folder */
     rc = m3u_vdir_dir_op(3, 0, brow_hdr);

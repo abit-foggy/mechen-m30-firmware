@@ -167,24 +167,25 @@ fi
 
 if [ $M3UPLAY = 1 ]; then
   echo "== browser.ap + mengine.ap: virtual-folder M3U browser + track stepper"
-  blob m3u_brow "$T/m3u/m3u_brow.c" 0x485946c0 -I"$T/m3u"
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -DM3U_SYM_CLICK=0x71252501 -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
+  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3u_brow.raw.o "$T/m3u/m3u_brow.c"
+  "${CROSS}objcopy" --set-section-alignment .text=4 m3u_brow.raw.o m3u_brow.o
+  printf 'SECTIONS { . = 0x485946C0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3u_brow.ld
+  printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3u_brow.ld
+  "${CROSS}ld" -EL -m elf32ltsmip -T m3u_brow.ld -e m3uplay_tramp -o m3u_brow.elf m3uplay_tramp.o m3u_brow.o
+  [ -z "$("${CROSS}size" -A m3u_brow.elf | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "m3u_brow: has writable data"; exit 1; }
+  "${CROSS}objcopy" -O binary -j .text m3u_brow.elf m3u_brow.bin
+  [ "$(sym m3u_brow.elf m3uplay_tramp)" = "485946c0" ] || { echo "m3uplay_tramp is not at 0x485946C0: $(sym m3u_brow.elf m3uplay_tramp)"; exit 1; }
   [ "$(stat -c %s m3u_brow.bin)" -le $((0x540)) ] || { echo "m3u_brow blob too big: $(stat -c %s m3u_brow.bin) > 0x540"; exit 1; }
   SYM_OPEN=$(( 0x$(sym m3u_brow.elf m3u_vdir_open) | 1 ))
   SYM_FMT=$(( 0x$(sym m3u_brow.elf m3u_format_row) | 1 ))
   SYM_BSET=$(( 0x$(sym m3u_brow.elf m3u_vdir_setloc) | 1 ))
   SYM_BDIR=$(( 0x$(sym m3u_brow.elf m3u_vdir_dir_op) | 1 ))
 
-  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
-  "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
-  "${CROSS}gcc" $CFLAGS $PROBE_DEF -I"$T/m3u" -DM3U_SYM_OPEN=$SYM_OPEN -DM3U_SYM_FMT=$SYM_FMT -c -o m3uplay.raw.o "$T/m3u/m3uplay.c"
-  "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay.raw.o m3uplay.o
-  printf 'SECTIONS { . = 0x400D4CD0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3uplay.ld
-  printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3uplay.ld
-  "${CROSS}ld" -EL -m elf32ltsmip -T m3uplay.ld -e m3uplay_tramp -o m3uplay.elf m3uplay_tramp.o m3uplay.o
-  [ -z "$("${CROSS}size" -A m3uplay.elf | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "m3uplay: has writable data, which a blob can't carry"; exit 1; }
-  "${CROSS}objcopy" -O binary -j .text m3uplay.elf m3uplay.bin
-  [ "$(sym m3uplay.elf m3uplay_tramp)" = "400d4cd0" ] || { echo "m3uplay_tramp is not at 0x400D4CD0: $(sym m3uplay.elf m3uplay_tramp)"; exit 1; }
-  [ "$(stat -c %s m3uplay.bin)" -le $((0x730)) ] || { echo "m3uplay blob too big for the bank tail: $(stat -c %s m3uplay.bin) > 0x730"; exit 1; }
+  blob m3uplay "$T/m3u/m3uplay.c" 0x71252500 $PROBE_DEF -I"$T/m3u" -DM3U_SYM_OPEN=$SYM_OPEN -DM3U_SYM_FMT=$SYM_FMT
+  [ "$(sym m3uplay.elf m3u_file_click)" = "71252500" ] || { echo "m3u_file_click is not at 0x71252500: $(sym m3uplay.elf m3u_file_click)"; exit 1; }
+  [ "$(stat -c %s m3uplay.bin)" -le $((0x800)) ] || { echo "m3uplay blob too big: $(stat -c %s m3uplay.bin) > 0x800"; exit 1; }
   SYM_BITM=$(( 0x$(sym m3uplay.elf m3u_vdir_get_items) | 1 ))
 
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -DM3U_SYM_SETLOC=$SYM_BSET -DM3U_SYM_ITEMS=$SYM_BITM -DM3U_SYM_DIROP=$SYM_BDIR \
@@ -210,7 +211,7 @@ if [ $M3UPLAY = 1 ]; then
   [ "$(sym m3u_meng.elf m3u_meng_step)" = "7b268000" ] || { echo "m3u_meng_step is not at 0x7B268000: $(sym m3u_meng.elf m3u_meng_step)"; exit 1; }
   [ "$(stat -c %s m3u_meng.bin)" -le $((0x600)) ] || { echo "m3u_meng blob too big: $(stat -c %s m3u_meng.bin) > 0x600"; exit 1; }
 
-  "$PY" -I "$T/m3u/patch_m3uplay.py" browser.ap browser.ap m3uplay.bin 0x400d4cd0 \
+  "$PY" -I "$T/m3u/patch_m3uplay.py" browser.ap browser.ap m3uplay.bin 0x71252500 \
     m3u_brow.bin 0x485946c0 m3u_brow_tramp.bin \
     0x$(sym m3u_brow_tramp.elf m3u_b_setloc) 0x$(sym m3u_brow_tramp.elf m3u_b_del) \
     0x$(sym m3u_brow_tramp.elf m3u_b_items) 0x$(sym m3u_brow_tramp.elf m3u_b_dirop) \

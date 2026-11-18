@@ -1,26 +1,25 @@
 /* Virtual-folder .m3u/.m3u8 click dispatcher + VFS track resolver for browser.ap
- * (bank 0x400D4C00 zero tail at 0x400D4CD0, max 1840 bytes, window 0x40).
+ * (linked at 0x71252500 in unused group-0x71 bank, max 2048 bytes, window 0x71).
  *
- * Calls window-0x48 helpers in m3u_brow.c (0x485946C0) via cross-bank pointers
- * so neither window 0x40 nor window 0x48 ever swaps against itself.
+ * m3u_file_click MUST be the first function in this unit (links at 0x71252500).
+ * Living in window 0x71 guarantees browser.ap's 0x40CD4C00..0x40CD4E00
+ * row_names[0..6] buffers and 0x40CD4E00 / 0x40D14E00 UI banks in window 0x40
+ * are NEVER evicted or overwritten!
  */
 #define M3U_BROWSER 1
 #include "m3uplay.h"
 
 #ifdef M3UPLAY_TEST
 extern fs_fn test_fs;
-extern void (*test_dialog)(u32, u32, u32);
 extern volatile struct brow_fsel *test_bf;
 extern u8 *test_brow_hdr;
 #define FS_CALL     (test_fs)
-#define DIALOG      (test_dialog)
 #define BF          (test_bf)
 #define BROW_HDR    (test_brow_hdr)
 #define CALL_OPEN   (m3u_vdir_open)
 #define CALL_FMT    (m3u_format_row)
 #else
 #define FS_CALL     ((fs_fn)0xBFC16A2Du)
-#define DIALOG      ((void (*)(u32, u32, u32))0x48AD4A2Du)
 #define BF          ((volatile struct brow_fsel *)0x9FC15734u)
 #define BROW_HDR    ((u8 *)0x9FC15598u)
 #define CALL_OPEN   ((u32 (*)(u32, const u8 *, u8 *, u32 (*)(void)))M3U_SYM_OPEN)
@@ -34,21 +33,11 @@ extern u8 *test_brow_hdr;
 #define LINE_BUF        (BW->line)
 #define format_vdir_row CALL_FMT
 
-#include "m3u_resolve.h"
-
-static void copy_bytes(volatile void *dst, const volatile void *src, u32 n)
-{
-    volatile u8 *d = (volatile u8 *)dst;
-    const volatile u8 *s = (const volatile u8 *)src;
-    while (n--) {
-        *d++ = *s++;
-    }
-}
-
-static u32 scan_count_cb(void)
-{
-    return m3u_scan_ex(BW->sec, 0xFFFFFFFFu, 0, 0);
-}
+static long vfs(u32 a1, u32 a2, u32 a3, u32 op);
+static u32 m3u_scan_ex(u8 *sec, u32 want, u32 cnt, u8 *row_out);
+static int m3u_resolve(u32 len, u32 *out_ext, u8 *out_layer);
+static void copy_bytes(volatile void *dst, const volatile void *src, u32 n);
+static u32 scan_count_cb(void);
 
 u32 m3u_file_click(u8 *arg0, u8 *state)
 {
@@ -138,8 +127,7 @@ play_fail_no_restore:
 #ifdef M3UPLAY_PROBE
         return 0u;
 #else
-        DIALOG(0x8000u, 3u, 0x8019u);
-        return 0xFFFDu;
+        return 0x8019u;
 #endif
     }
 
@@ -150,14 +138,7 @@ play_fail_no_restore:
     }
 
     /* Case 3: Normal folder, .m3u/.m3u8 row -> open as virtual folder! */
-    {
-        u32 rc = CALL_OPEN(file_idx, row, state, scan_count_cb);
-        if (rc == 0xFFFCu) {
-            DIALOG(0x8000u, 3u, 0x8018u);   /* stock "Empty folder!" */
-            return 0xFFFDu;
-        }
-        return rc;
-    }
+    return CALL_OPEN(file_idx, row, state, scan_count_cb);
 }
 
 u32 m3u_vdir_get_items(const u8 *req, u8 *row_out)
@@ -174,3 +155,19 @@ u32 m3u_vdir_get_items(const u8 *req, u8 *row_out)
     start = *(const u16 *)(req + 2);
     return m3u_scan_ex(BW->sec, start ? (start - 1u) : 0u, cnt, row_out);
 }
+
+static void copy_bytes(volatile void *dst, const volatile void *src, u32 n)
+{
+    volatile u8 *d = (volatile u8 *)dst;
+    const volatile u8 *s = (const volatile u8 *)src;
+    while (n--) {
+        *d++ = *s++;
+    }
+}
+
+static u32 scan_count_cb(void)
+{
+    return m3u_scan_ex(BW->sec, 0xFFFFFFFFu, 0, 0);
+}
+
+#include "m3u_resolve.h"

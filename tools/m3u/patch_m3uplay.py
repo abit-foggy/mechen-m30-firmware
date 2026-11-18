@@ -1,32 +1,29 @@
 """Insert the virtual-folder M3U browser + mengine playback hooks.
 
 usage:
-  patch_m3uplay.py BROW_IN BROW_OUT PLAY.bin TRAMP_VA
+  patch_m3uplay.py BROW_IN BROW_OUT PLAY.bin PLAY_VA
                    BROW.bin BROW_VA BTRAMP.bin BSETLOC BDEL BITEMS BDIROP
                    [MENG_IN MENG_OUT MTRAMP.bin MSTEP.bin SETLOC BYNO PREV NEXT]
 
-browser.ap writes (every site guarded by stock-byte assertions):
+browser.ap writes (ZERO bytes in window 0x40 except the 4-byte jal at 0x40D15108,
+preserving browser.ap's live row_names[0..6] buffers at 0x40CD4C00..0x40CD4E00!):
   1. file 0x12808 (guest 0x40D15108, file-row prompt call):
-     stock `b0 1b 4f 52` (jal 0x4875493C) -> `60 18 34 53` (jal 0x400D4CD0).
-  2. file 0x23D0 (bank 0x400D4C00 tail, guest 0x400D4CD0, max 0x730 = 1840 B):
-     verified all-zero tail -> PLAY.bin.
-  3. file 0x163C0 (bank 0x48594400 tail, guest 0x485946C0, max 0x540 = 1344 B):
-     verified all-zero tail -> BROW.bin.
-  4. file 0x48E0 (bank 0x780DB200 tail, guest 0x780DB7E0, max 0x220 = 544 B):
-     verified all-zero tail -> BTRAMP.bin, and four mode-0 fsel pointers in
-     0x780DB200 (@0x46A4, @0x46BC, @0x46C8, @0x46D4) -> BTRAMP symbols | 1.
+     stock `b0 1b 4f 52` (jal 0x4875493C) -> `d0 1a b0 51` (jal 0x485946C0).
+  2. file 0x9B00 (unused group-0x71 bank @ table 0xA6C, guest 0x71252500,
+     max 0x800 = 2048 B, window 0x71): verified 12B no-op stub + zero run -> PLAY.bin.
+  3. file 0x163C0 (bank 0x48594400 tail, guest 0x485946C0, max 0x540 = 1344 B,
+     window 0x48): verified all-zero tail -> BROW.bin (starts with m3uplay_tramp).
+  4. file 0x48E0 (bank 0x780DB200 tail, guest 0x780DB7E0, max 0x220 = 544 B,
+     window 0x78): verified all-zero tail -> BTRAMP.bin, and four mode-0 fsel
+     pointers in 0x780DB200 (@0x46A4, @0x46BC, @0x46C8, @0x46D4) -> BTRAMP | 1.
 
 mengine.ap writes (when MENG_IN..NEXT are supplied):
   1. bank 0x7A052D00 (table @0x40C, file 0x5600, stock size 0x638):
-     - four mode-0 fsel pointers (set_location @0x59B4, get_byno @0x59C0,
-       get_prevfile @0x59CC, get_nextfile @0x59D8) -> MTRAMP symbols | 1
-     - MTRAMP.bin placed in the verified-zero tail at file 0x5C38 (guest
-       0x7A053338, max 0xC8 = 200 B) and bank size raised to cover it.
+     - four mode-0 fsel pointers -> MTRAMP symbols | 1
+     - MTRAMP.bin at file 0x5C38 (guest 0x7A053338, max 0xC8 = 200 B).
   2. bank 0x7B268000 (unused group-0x7B bank 9, table @0x76C):
-     - bank 0x60A50D00 (table @0x2EC, file 0xC900, live code ends at 0xCAAC)
-       load size trimmed from 0x800 to 0x200
-     - bank 9 table @0x76C pointed at the verified-zero 0x600-byte run at file
-       0xCB00..0xD100 (guest 0x7B268000) and MSTEP.bin written there.
+     - bank 0x60A50D00 load size trimmed from 0x800 to 0x200
+     - MSTEP.bin at file 0xCB00 (guest 0x7B268000, max 0x600 = 1536 B).
 """
 import struct
 import sys
@@ -34,13 +31,15 @@ import sys
 # browser.ap constants
 CLICK_FO = 0x12808
 CLICK_STOCK = bytes.fromhex("b01b4f52")   # jal 0x4875493C
-CLICK_NEW = bytes.fromhex("60183453")     # jal 0x400D4CD0 (m3uplay_tramp)
+CLICK_NEW = bytes.fromhex("d01ab051")     # jal 0x485946C0 (m3uplay_tramp in window 0x48!)
 OLD_CLASSIFY_FO = 0x12894
 OLD_CLASSIFY_STOCK = bytes.fromhex("811a8053")
-POOL_FO = 0x4594                          # stock 0x780DB494 (must remain stock)
+POOL_FO = 0x4594
 POOL_STOCK = 0xBFC16A2D
 
-PLAY_FO, PLAY_MAX, TRAMP_VA = 0x23D0, 0x730, 0x400D4CD0
+B_7125_TBL = 0xA6C
+PLAY_FO, PLAY_VA, PLAY_MAX = 0x9B00, 0x71252500, 0x800
+NOOP_STUB = bytes.fromhex("91643d67b9651164a0e80065")
 
 B_4859_TBL = 0x508
 B_4859_FO, B_4859_VA, B_4859_SZ = 0x16100, 0x48594400, 0x800
@@ -65,7 +64,6 @@ M_60A5_TBL = 0x2EC
 M_60A5_FO, M_60A5_VA, M_60A5_SZ, M_60A5_NEW_SZ = 0xC900, 0x60A50D00, 0x800, 0x200
 M_7B26_TBL = 0x76C
 M_7B26_OLD_FO, M_7B26_VA, M_7B26_OLD_SZ = 0xA100, 0x7B268000, 0xC
-M_7B26_STUB = bytes.fromhex("91643d67b9651164a0e80065")
 M_STEP_FO, M_STEP_MAX = 0xCB00, 0x600
 
 M_PTRS = [
@@ -76,12 +74,12 @@ M_PTRS = [
 ]
 
 
-def patch_browser(src, out, play_path, tramp_s, brow_path, brow_va_s, btramp_path,
+def patch_browser(src, out, play_path, play_va_s, brow_path, brow_va_s, btramp_path,
                   bset_s, bdel_s, bitm_s, bdir_s):
-    tramp = int(tramp_s, 0)
+    play_va = int(play_va_s, 0)
     brow_va = int(brow_va_s, 0)
     baddrs = [int(x, 0) for x in (bset_s, bdel_s, bitm_s, bdir_s)]
-    assert tramp == TRAMP_VA, "tramp must be %#x (got %#x)" % (TRAMP_VA, tramp)
+    assert play_va == PLAY_VA, "play_va must be %#x (got %#x)" % (PLAY_VA, play_va)
     assert brow_va == BROW_VA, "brow_va must be %#x (got %#x)" % (BROW_VA, brow_va)
 
     play = open(play_path, "rb").read()
@@ -103,11 +101,15 @@ def patch_browser(src, out, play_path, tramp_s, brow_path, brow_va_s, btramp_pat
         "classify site file %#x is not stock: %s" % (OLD_CLASSIFY_FO, d[OLD_CLASSIFY_FO:OLD_CLASSIFY_FO + 4].hex())
     assert struct.unpack_from("<I", d, POOL_FO)[0] == POOL_STOCK, \
         "fetch pool word file %#x is not stock" % POOL_FO
+    assert struct.unpack_from("<3I", d, B_7125_TBL) == (PLAY_FO, PLAY_VA, PLAY_MAX), \
+        "71252500 bank entry mismatch"
+    assert bytes(d[PLAY_FO:PLAY_FO + 12]) == NOOP_STUB and not any(d[PLAY_FO + 12:PLAY_FO + PLAY_MAX]), \
+        "71252500 bank is not an empty no-op bank"
     assert struct.unpack_from("<3I", d, B_4859_TBL) == (B_4859_FO, B_4859_VA, B_4859_SZ), \
         "48594400 bank entry mismatch"
     assert struct.unpack_from("<3I", d, B_780D_TBL) == (B_780D_FO, B_780D_VA, B_780D_SZ), \
         "780DB200 bank entry mismatch"
-    assert not any(d[PLAY_FO:PLAY_FO + PLAY_MAX]), "400D4CD0 tail is not zero"
+    assert not any(d[0x23D0:0x2B00]), "400D4CD0 must remain untouched stock zeros"
     assert not any(d[BROW_FO:BROW_FO + BROW_MAX]), "485946C0 tail is not zero"
     assert not any(d[BTRAMP_FO:BTRAMP_FO + BTRAMP_MAX]), "780DB7E0 tail is not zero"
     for (fo, stock), _ in zip(B_PTRS, baddrs):
@@ -116,6 +118,8 @@ def patch_browser(src, out, play_path, tramp_s, brow_path, brow_va_s, btramp_pat
 
     d[CLICK_FO:CLICK_FO + 4] = CLICK_NEW
     d[PLAY_FO:PLAY_FO + len(play)] = play
+    if len(play) < 12:
+        d[PLAY_FO + len(play):PLAY_FO + 12] = b"\x00" * (12 - len(play))
     d[BROW_FO:BROW_FO + len(brow)] = brow
     d[BTRAMP_FO:BTRAMP_FO + len(btramp)] = btramp
     for (fo, _), a in zip(B_PTRS, baddrs):
@@ -131,7 +135,7 @@ def patch_browser(src, out, play_path, tramp_s, brow_path, brow_va_s, btramp_pat
 
     allowed = (
         set(range(CLICK_FO, CLICK_FO + 4))
-        | set(range(PLAY_FO, PLAY_FO + len(play)))
+        | set(range(PLAY_FO, PLAY_FO + max(len(play), 12)))
         | set(range(BROW_FO, BROW_FO + len(brow)))
         | set(range(BTRAMP_FO, BTRAMP_FO + len(btramp)))
     )
@@ -141,8 +145,8 @@ def patch_browser(src, out, play_path, tramp_s, brow_path, brow_va_s, btramp_pat
     assert diffs <= allowed, "unexpected browser.ap byte changes outside patch sites"
 
     open(out, "wb").write(d)
-    print("m3uplay browser.ap: click 0x40D15108 -> %#x, play %d/%d B, brow %d/%d B, tramp %d/%d B" % (
-        tramp, len(play), PLAY_MAX, len(brow), BROW_MAX, len(btramp), BTRAMP_MAX))
+    print("m3uplay browser.ap: click 0x40D15108 -> %#x (w48), play %d/%d B @%#x (w71), brow %d/%d B (w48), tramp %d/%d B (w78)" % (
+        brow_va, len(play), PLAY_MAX, play_va, len(brow), BROW_MAX, len(btramp), BTRAMP_MAX))
 
 
 def patch_mengine(src, out, mtramp_path, mstep_path, setloc_s, byno_s, prev_s, next_s):
@@ -166,7 +170,7 @@ def patch_mengine(src, out, mtramp_path, mstep_path, setloc_s, byno_s, prev_s, n
         "60A50D00 bank entry mismatch: %r" % (struct.unpack_from("<3I", d, M_60A5_TBL),)
     assert struct.unpack_from("<3I", d, M_7B26_TBL) == (M_7B26_OLD_FO, M_7B26_VA, M_7B26_OLD_SZ), \
         "7B268000 bank entry mismatch: %r" % (struct.unpack_from("<3I", d, M_7B26_TBL),)
-    assert bytes(d[M_7B26_OLD_FO:M_7B26_OLD_FO + M_7B26_OLD_SZ]) == M_7B26_STUB, \
+    assert bytes(d[M_7B26_OLD_FO:M_7B26_OLD_FO + M_7B26_OLD_SZ]) == NOOP_STUB, \
         "7B268000 stock stub mismatch"
     assert not any(d[M_TRAMP_FO:M_TRAMP_FO + M_TRAMP_MAX]), \
         "7A052D00 zero tail %#x..%#x is not zero" % (M_TRAMP_FO, M_TRAMP_FO + M_TRAMP_MAX)

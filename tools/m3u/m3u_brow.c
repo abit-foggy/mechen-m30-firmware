@@ -1,26 +1,24 @@
 /* Virtual-folder .m3u navigation + row formatter for browser.ap
- * (linked at 0x485946C0 in bank 0x48594400's 1344-byte verified zero tail,
- * window 0x48 — distinct from window 0x40 and window 0x78).
+ * (linked right after m3uplay_tramp.S at 0x485946C0 in bank 0x48594400's
+ * 1344-byte verified zero tail, window 0x48).
  *
- * Freestanding blob: no writable globals, no string literals, no libc.
+ * Never touches any 0x40xx4C00 bank, preserving browser.ap's live row_names
+ * string buffers at 0x40CD4C00..0x40CD4E00 (physical 0x9FC14C00..0x9FC14E00).
  */
 #include "m3uplay.h"
 
 #ifdef M3UPLAY_TEST
 extern fs_fn test_fs;
 extern u32 (*test_step_dir)(u32, u16);
-extern void (*test_dialog)(u32, u32, u32);
 extern volatile struct brow_fsel *test_bf;
 extern u8 *test_brow_hdr;
 #define FS_CALL   (test_fs)
 #define STEP_DIR  (test_step_dir)
-#define DIALOG    (test_dialog)
 #define BF        (test_bf)
 #define BROW_HDR  (test_brow_hdr)
 #else
 #define FS_CALL   ((fs_fn)0xBFC16A2Du)
 #define STEP_DIR  ((u32 (*)(u32, u16))0x780DB49Du)
-#define DIALOG    ((void (*)(u32, u32, u32))0x48AD4A2Du)
 #define BF        ((volatile struct brow_fsel *)0x9FC15734u)
 #define BROW_HDR  ((u8 *)0x9FC15598u)
 #endif
@@ -95,8 +93,7 @@ void m3u_format_row(const u8 *line, u32 len, u8 *row)
 }
 
 /* Open a .m3u/.m3u8 row in a normal folder as a virtual folder.
- * Note: DIALOG (0x48AD4A2C) is in window 0x48, so we return 0xFFFC when the
- * caller in window 0x40 (m3u_file_click) should display the empty-folder popup! */
+ * Returns 0 on success, 0x8018 when empty/missing ("Empty folder!" popup). */
 u32 m3u_vdir_open(u32 file_idx, const u8 *row, u8 *state, u32 (*scan_count)(void))
 {
     volatile struct brow_fsel *bf = BF;
@@ -104,41 +101,38 @@ u32 m3u_vdir_open(u32 file_idx, const u8 *row, u8 *state, u32 (*scan_count)(void
     u8 *hdr = BROW_HDR;
     u32 count;
     u8 vlayer;
+    (void)row;
 
     if (bf->vfs_ctx == 0 || hdr[5] >= 8u) {
         return 0u;
     }
     if (!STEP_DIR(bf->mask, (u16)file_idx)) {
-        return 0xFFFCu;
+        return 0x8018u;
     }
     if (!b_vfs((u32)vd->pl_dir, (u32)vd->pl_off, 0, OP_OFFSET)) {
         return 0u;
     }
+    vd->title[0] = 0;
+    b_vfs((u32)vd->title, 25u, 0, OP_GETNAME);
+    vd->title[50] = 0;
+    vd->title[51] = 0;
     vd->pl_layer = hdr[5];
     vd->disk = bf->disk;
 
     count = scan_count();
     b_vfs((u32)vd->pl_dir, (u32)vd->pl_off, 1u, OP_OFFSET);
     if (count == 0 || count == 0xFFFFFFFFu) {
-        return 0xFFFCu;
+        return 0x8018u;
     }
     if (count > 0xFFFFu) {
         count = 0xFFFFu;
     }
     vd->count = (u16)count;
     {
-        const u8 *rname = *(const u8 *const *)(row + 8);
         u8 *tbuf = *(u8 **)(hdr + 8);
-        if (rname) {
-            b_copy(vd->title, rname, 50u);
-            if (hdr[4] != 0 && tbuf) {
-                b_copy(tbuf, rname, 50u);
-            }
-        } else {
-            vd->title[0] = 0;
+        if (hdr[4] != 0 && tbuf) {
+            b_copy(tbuf, vd->title, 50u);
         }
-        vd->title[50] = 0;
-        vd->title[51] = 0;
     }
     vlayer = (u8)(vd->pl_layer + 1u);
     vd->magic = M3UVD_MAGIC;
