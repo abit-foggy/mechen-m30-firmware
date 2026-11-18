@@ -103,7 +103,7 @@ u32 m3u_vdir_open(u32 file_idx, const u8 *row, u8 *state, u32 (*scan_count)(void
     u8 vlayer;
     (void)row;
 
-    if (bf->vfs_ctx == 0 || hdr[5] >= 8u) {
+    if (bf->vfs_ctx == 0xFFFFFFFFu || hdr[5] >= 8u) {
         return 0u;
     }
     if (!STEP_DIR(bf->mask, (u16)file_idx)) {
@@ -189,7 +189,7 @@ u32 m3u_vdir_setloc(const u8 *loc, u32 flag)
     struct vdir_state *vd = VD;
     (void)flag;
 
-    if (loc && bf->vfs_ctx != 0 && vs->magic == M3UPLAY_MAGIC
+    if (loc && bf->vfs_ctx != 0xFFFFFFFFu && vs->magic == M3UPLAY_MAGIC
             && *(const u32 *)(loc + 8) == vs->cur_off[0]
             && *(const u32 *)(loc + 12) == vs->cur_off[1]
             && b_vfs((u32)vs->pl_dir, (u32)vs->pl_off, 1u, OP_OFFSET)) {

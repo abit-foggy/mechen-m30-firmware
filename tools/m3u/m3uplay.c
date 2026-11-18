@@ -73,7 +73,7 @@ u32 m3u_file_click(u8 *arg0, u8 *state)
         u8 layer = 0;
         u8 *desc;
 
-        if (bf->vfs_ctx == 0 || !arg0 || file_idx > count) {
+        if (bf->vfs_ctx == 0xFFFFFFFFu || !arg0 || file_idx > count) {
             goto play_fail_no_restore;
         }
         for (tries = 0; tries < 16u && start_k + tries < count; tries++) {
@@ -145,7 +145,7 @@ u32 m3u_vdir_get_items(const u8 *req, u8 *row_out)
 {
     u32 cnt, start;
 
-    if (!req || !row_out || BF->vfs_ctx == 0) {
+    if (!req || !row_out || BF->vfs_ctx == 0xFFFFFFFFu) {
         return 0u;
     }
     cnt = req[1];

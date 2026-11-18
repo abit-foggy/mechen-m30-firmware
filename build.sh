@@ -289,6 +289,24 @@ if [ -n "$THEME" ]; then
   done
 fi
 
+"$PY" "$T/metadata/port.py" music.ap
+if [ "$M3UPLAY" = 1 ]; then
+  "${CROSS}gcc" $CFLAGS -c "$T/m3u/m3u_gate.S" -o gate.o
+  "${CROSS}objcopy" -j .text -O binary gate.o gate.bin
+  "$PY" - <<'PYGATE'
+from pathlib import Path
+p = Path("browser.ap")
+d = bytearray(p.read_bytes())
+gate = Path("gate.bin").read_bytes()
+assert gate[0x2fe:0x300] != bytes(2), "branch must occupy both halfwords"
+assert d[0x127fc:0x12800] == bytes.fromhex("80f00022")
+body = gate[0x5a0:]
+assert 0 < len(body) <= 0x60 and not any(d[0x12aa0:0x12aa0+len(body)])
+d[0x127fc:0x12800] = gate[0x2fc:0x300]
+d[0x12aa0:0x12aa0+len(body)] = body
+p.write_bytes(d)
+PYGATE
+fi
 echo "== repack"
 "$PY" -I "$T/repack_fw.py" "$STOCK" "$W/stock/dec.bin" "$OUT/MECHEN_M30.HEX" \
   $(for f in $PATCHED; do printf '%s=%s ' $f $f; done) | tail -n 1 | sed 's/^/   /'
