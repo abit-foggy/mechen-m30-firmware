@@ -27,14 +27,36 @@ def collect(module):
             raise ValueError(f"missing metadata bank {bank[1]:#x}")
     return b"".join(module[start:start + size] for start, _, size in BANKS)
 
-def main(path):
+def port_library_finder(playlist, stock_music, music):
+    # The library scanner has its own copy of the FLAC block finder. Its
+    # read and seek functions occupy the same offsets in a different bank.
+    start, end = 0x1C66C, 0x1C6E0
+    target = 0xE56C
+    stock = bytes(stock_music[start:end])
+    new = bytes(music[start:end])
+    def relocate(code):
+        for tail in (bytes.fromhex("f06c"), bytes.fromhex("366d")):
+            source = bytes.fromhex("f018") + tail
+            if code.count(source) != 1:
+                raise ValueError("unexpected FLAC reader call")
+            code = code.replace(source, bytes.fromhex("3018") + tail)
+        return code
+    if playlist[target:target + len(stock)] != relocate(stock):
+        raise ValueError("unexpected library FLAC block finder")
+    playlist[target:target + len(stock)] = relocate(new)
+
+
+def main(path, playlist_path):
     module = bytearray(path.read_bytes())
     result = bps.apply(collect(module), (Path(__file__).parent / "community.bps").read_bytes())
     cursor = 0
     for start, _, size in BANKS:
         module[start:start + size] = result[cursor:cursor + size]
         cursor += size
+    playlist = bytearray(playlist_path.read_bytes())
+    port_library_finder(playlist, path.read_bytes(), module)
+    playlist_path.write_bytes(playlist)
     path.write_bytes(module)
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main(Path(sys.argv[1]), Path(sys.argv[2]))

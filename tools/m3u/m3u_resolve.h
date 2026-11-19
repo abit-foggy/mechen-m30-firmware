@@ -102,8 +102,12 @@ static __attribute__((noinline)) u32 m3u_scan_entry(u8 *sec, u32 want)
     if (!vfs((u32)PL_DIR, (u32)PL_OFF, 1u, OP_OFFSET)) {
         return res;
     }
-    h = vfs(0, 0, 0, OP_OPEN);
-    if (h <= 0) {
+    /* Use the named-open form used by the stock library builder. */
+    if (!vfs((u32)sec, 255u, 0, OP_GETNAME)) {
+        return res;
+    }
+    h = vfs((u32)sec, 0, 0, OP_OPEN);
+    if (!h) {
         return res;
     }
     vfs((u32)&fsize, (u32)h, 0, OP_SIZE);

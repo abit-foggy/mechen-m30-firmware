@@ -289,7 +289,9 @@ if [ -n "$THEME" ]; then
   done
 fi
 
-"$PY" "$T/metadata/port.py" music.ap
+[ -f playlist.ap ] || cp "$F/playlist.ap" playlist.ap
+case " $PATCHED " in *" playlist.ap "*) ;; *) PATCHED="$PATCHED playlist.ap" ;; esac
+"$PY" "$T/metadata/port.py" music.ap playlist.ap
 if [ "$M3UPLAY" = 1 ]; then
   "${CROSS}gcc" $CFLAGS -c "$T/m3u/m3u_gate.S" -o gate.o
   "${CROSS}objcopy" -j .text -O binary gate.o gate.bin

@@ -8,7 +8,7 @@
  *   - op 2 (OP_GETNAME): writes FF FE + UTF-16LE + 00 00 when max_units > 0,
  *                        or the 4-byte packed extension when max_units == 0
  *   - op 3 (OP_OFFSET): snapshots/restores 73B dir_stack + 8B file_off
- *   - op 5 (OP_OPEN): opens the currently pointed-to file when a1 == 0
+ *   - op 5 (OP_OPEN): opens a file by its UTF-16LE name
  *   - op 7 (OP_CLOSE): closes open file handle
  *   - op 9 (OP_SIZE): handle in $a2, writes exact byte length to *(u32 *)$a1
  *   - op 0xB (OP_SEEK): handle in $a3, sector-aligned seek
@@ -231,7 +231,8 @@ static long run_vfs(struct vfs_ctx *vc, u32 a1, u32 a2, u32 a3, u32 op)
     }
 
     case OP_OPEN:
-        if (a1 != 0 || vc->cur_entry < 0 || tree[vc->cur_entry].is_dir) return 0;
+        if (!a1 || vc->cur_entry < 0 || tree[vc->cur_entry].is_dir ||
+            !utf16_eq_utf8((const u8 *)(unsigned long)a1, tree[vc->cur_entry].name, 255)) return 0;
         vc->open_node = vc->cur_entry;
         vc->seek_pos = 0;
         vc->open_count++;
