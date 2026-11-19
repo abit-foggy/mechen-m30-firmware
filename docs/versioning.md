@@ -7,7 +7,7 @@ Every build of this firmware identifies itself on the player under
 |-----|-------|---------|
 | model | `M30` | `M30` (unchanged) |
 | version | `  V1.101.10` | `0.1.0-dev` / `0.1.0-nightly` / `0.1.0-release` |
-| date | `2025-06-25` | build ID / short commit / tag (e.g. `d3e852eb`, `cccdd6e`, `v0.1.0`) |
+| date | `2025-06-25` | build ID / short commit / tag (e.g. `d3e852eb`, `cccdd6e`, `0.1.0`) |
 
 The original firmware version and date are never displayed, and the
 `FWIMAGE.FW` header (magic, `1.101.10`, the `+0x10` checksum that the repacker
@@ -29,7 +29,7 @@ BUILD_CHANNEL=release ./build.sh --test stock.HEX build
 |---------|-------------------|----------------------|-------|
 | `dev` | `<base>-dev` | 8-hex-digit build ID | always allowed; the ID is a deterministic hash of the firmware-relevant source (`VERSION`, `build.sh`, `tools/`, `patches/`) plus the build configuration — identical inputs give an identical ID, any change (committed or not) changes it; no timestamps, no randomness; `build/` output is ignored |
 | `nightly` | `<base>-nightly` | short (7-hex) commit SHA of `HEAD` | clean working tree required (dirty tree → build aborts) |
-| `release` | `<base>-release` | the tag `v<base>` | clean tree required **and** `HEAD` must be exactly tagged `v<base>` (e.g. `v0.1.0` for `VERSION` `0.1.0`); a mismatch aborts the build |
+| `release` | `<base>-release` | the tag `<base>` | clean tree required **and** `HEAD` must be exactly tagged `<base>` (e.g. `0.1.0` for `VERSION` `0.1.0`); a mismatch aborts the build |
 
 The suffixes (`-dev` / `-nightly` / `-release`) are shown on the device only;
 GitHub tags never carry them. `tools/version/version.py` prints the metadata
@@ -94,11 +94,11 @@ tag `nightly` is force-moved to the commit and the rolling GitHub release
 `nightly` is updated with the artifact `MECHEN_M30.HEX` replaced in place
 (`--clobber`); the full commit SHA goes into the release description.
 
-**release** (push of a `v*` tag): the workflow first checks
-`tag == v$(cat VERSION)`, then builds from the exact tag with
+**release** (push of a numeric version tag): the workflow first checks
+`tag == $(cat VERSION)`, then builds from the exact tag with
 `BUILD_CHANNEL=release` (which independently refuses a dirty tree or a
-tag/VERSION mismatch), verifies, and publishes a release titled with the bare
-version (`0.1.0`) on tag `v0.1.0` with `MECHEN_M30.HEX` attached.
+tag/VERSION mismatch), verifies, and publishes a release titled with the release version
+(`0.1.0-release`) on tag `0.1.0` with `MECHEN_M30.HEX` attached.
 `gh release create` fails if the release already exists, so stable tags and
 releases are immutable — never overwritten.
 
@@ -111,11 +111,11 @@ the player **Setting > Auto upgrade**), then on **Settings > Information** check
 2. the version row reads the channel's version (`0.1.0-dev`, `0.1.0-nightly`,
    `0.1.0-release`) and is **not clipped** on the right edge of the LCD;
 3. the third row reads the identifier: 8-hex build ID (dev), 7-hex commit
-   (nightly), or `v0.1.0` (release) — and matches `build/version.json`;
+   (nightly), or `0.1.0` (release) — and matches `build/version.json`;
 4. two consecutive dev builds with no source change show the **same** build ID;
    after any source edit the ID changes;
 5. `BUILD_CHANNEL=nightly` on a dirty tree aborts the build with exit 2;
-   `BUILD_CHANNEL=release` without the exact tag `v0.1.0` aborts too;
+   `BUILD_CHANNEL=release` without the exact tag `0.1.0` aborts too;
 6. no other Settings screens regressed (the patch touches only the two `la`
    halfwords and the 0x48-byte zero tail of bank `0x40114c00`).
 

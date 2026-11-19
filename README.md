@@ -8,7 +8,7 @@ The MECHEN M30 is built on an Actions Semiconductor ATJ2127-family chip (USB ID 
 
 ## What the patches fix
 
-The patches change five things in the stock MECHEN M30 firmware:
+Release 0.1.0 adds M3U and M3U8 browsing and playback, community metadata parser updates, and FLAC library indexing for files with large embedded covers. It also includes the earlier features below.
 
 - **Shuffle fix.** On a large SD card, stock shuffle plays the same small part of the library, mostly artists that start with A, B, or C. The patch replaces the stock shuffle with one that reaches every track on the card.
 - **Shuffle all songs from folder view.** Stock firmware only shuffles inside the current folder. With **Repeat all** and **Shuffle** on, the patched player shuffles across every folder on the card, and prev steps back through the songs it already played.
@@ -126,7 +126,7 @@ The script takes these options:
 Every build identifies itself on the player under **Setting** > **Information** (model row unchanged):
 `BUILD_CHANNEL=dev` (default) shows `0.1.0-dev` plus a deterministic build ID derived from the source and
 build options, `nightly` shows `0.1.0-nightly` plus the short commit SHA (clean tree required), and
-`release` shows `0.1.0-release` plus the tag (requires `HEAD` exactly tagged `v0.1.0`). The base version
+`release` shows `0.1.0-release` plus the tag (requires `HEAD` exactly tagged `0.1.0`). The base version
 lives in the `VERSION` file; the build also writes the metadata to `build/version.json`. See
 [docs/versioning.md](docs/versioning.md).
 

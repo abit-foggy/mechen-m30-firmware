@@ -18,8 +18,8 @@ Channels:
            Requires a clean git working tree (tracked and untracked files);
            dirty trees are rejected so a published nightly always matches its
            commit.
-  release  version "<base>-release", identifier = the tag "v<base>". Requires
-           a clean tree and that HEAD is exactly tagged "v<base>"; mismatches
+  release  version "<base>-release", identifier = the tag "<base>". Requires
+           a clean tree and that HEAD is exactly tagged "<base>"; mismatches
            are rejected.
 
 Output: shell-eval-able lines by default (CHANNEL=, VERSION=, IDENT=, ...),
@@ -125,7 +125,7 @@ def release_metadata(config):
     if reason:
         raise VersionError("release builds require a clean working tree: " + reason)
     base = base_version()
-    tag = "v" + base
+    tag = base
     r = git("describe", "--exact-match", "--tags", "HEAD")
     if r.returncode or r.stdout.strip() != tag:
         got = r.stdout.strip() if r.returncode == 0 else "no tag on HEAD"

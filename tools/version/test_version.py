@@ -16,8 +16,8 @@ Group B runs version.py in a throwaway git repo (the real repo is never touched)
     uncommitted files change it; build/ outputs do not;
   - nightly: dirty tree rejected; clean tree -> short SHA of HEAD, and a new
     commit changes the ID;
-  - release: missing/mismatched tag and dirty tree rejected; exact tag v<base>
-    -> identifier v<base>;
+  - release: missing/mismatched tag and dirty tree rejected; exact tag <base>
+    -> identifier <base>;
   - --json / --out produce the same metadata for the release automation.
 
 Prints PASS/FAIL lines; exits non-zero if any check fails.
@@ -189,15 +189,15 @@ def group_b(work):
 
     rr = V('--channel', 'release', '--config', 'keys=1')
     check(rr.returncode == 2, 'release: untagged HEAD rejected (exit 2)')
-    git(repo, 'tag', 'v0.2.0')
+    git(repo, 'tag', '0.2.0')
     rr = V('--channel', 'release', '--config', 'keys=1')
-    check(rr.returncode == 2, 'release: tag v0.2.0 != v0.1.0 (VERSION) rejected (exit 2)')
-    git(repo, 'tag', '-d', 'v0.2.0')
-    git(repo, 'tag', 'v0.1.0')
+    check(rr.returncode == 2, 'release: tag 0.2.0 != 0.1.0 (VERSION) rejected (exit 2)')
+    git(repo, 'tag', '-d', '0.2.0')
+    git(repo, 'tag', '0.1.0')
     rr = V('--channel', 'release', '--config', 'keys=1')
     mr = md(rr)
-    check(rr.returncode == 0 and mr['IDENT'] == 'v0.1.0' and mr['VERSION'] == '0.1.0-release',
-          'release: exact tag v0.1.0 -> identifier v0.1.0, VERSION=0.1.0-release')
+    check(rr.returncode == 0 and mr['IDENT'] == '0.1.0' and mr['VERSION'] == '0.1.0-release',
+          'release: exact tag 0.1.0 -> identifier 0.1.0, VERSION=0.1.0-release')
     open(os.path.join(repo, 'dirty.txt'), 'w').write('x')
     check(V('--channel', 'release', '--config', 'keys=1').returncode == 2,
           'release: dirty tree rejected even with the right tag (exit 2)')

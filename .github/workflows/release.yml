@@ -1,20 +1,8 @@
-# Stable releases: triggered by pushing a v* tag.
-#
-# Validates that the tag matches the VERSION file (v0.1.0 for VERSION 0.1.0),
-# builds from the exact tag with BUILD_CHANNEL=release (which itself refuses a
-# dirty tree or a tag/VERSION mismatch), runs the full verification suite, and
-# only then publishes a GitHub release named after the bare version (0.1.0)
-# attached to the tag v0.1.0. `gh release create` fails if the release already
-# exists, so stable tags and releases are immutable — never overwritten.
-#
-# Setup required once (see docs/versioning.md):
-#   - secret STOCK_HEX_B64: base64 of the official 2025-06-26 MECHEN_M30.HEX
-#   - Actions permissions: contents: write (to create the release on the tag)
 name: release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['[0-9]*.[0-9]*.[0-9]*']
 
 permissions:
   contents: write   # create the release on the tag
@@ -31,26 +19,25 @@ jobs:
         run: |
           BASE=$(cat VERSION)
           TAG=${GITHUB_REF_NAME}
-          if [ "$TAG" != "v$BASE" ]; then
-            echo "tag $TAG does not match VERSION $BASE (expected v$BASE)" >&2
+          if [ "$TAG" != "$BASE" ]; then
+            echo "tag $TAG does not match VERSION $BASE (expected $BASE)" >&2
             exit 1
           fi
           echo "tag $TAG matches VERSION $BASE"
 
-      - name: Restore the stock firmware HEX from the secret
-        run: printf '%s' "$STOCK_HEX_B64" | base64 -d > MECHEN_M30.HEX
-        env:
-          STOCK_HEX_B64: ${{ secrets.STOCK_HEX_B64 }}
+      - name: Download the official stock firmware
+        run: curl --fail --location --retry 3 -o MECHEN_M30.HEX 'https://drive.google.com/uc?export=download&id=1lTyyP05toQHbcnmmiK3R9FFToj9RZfxC'
 
       - name: Install the build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-mips64-linux-gnu qemu-user-static
+          sudo apt-get install -y gcc-mips64-linux-gnuabi64 libc6-dev-i386 qemu-user-static
           git clone --depth 1 https://github.com/Rockbox/rockbox.git /tmp/rockbox
           make -C /tmp/rockbox/utils/atj2137/atjboottool
 
       - name: Build and test from the exact tag (channel release)
         env:
+          CROSS: mips64-linux-gnuabi64-
           BUILD_CHANNEL: release
           ATJBOOTTOOL: /tmp/rockbox/utils/atj2137/atjboottool/atjboottool
         run: ./build.sh --test MECHEN_M30.HEX build
@@ -62,21 +49,13 @@ jobs:
           cat build/version.json
           sha256sum build/MECHEN_M30.HEX
 
-      # Only reached after a successful build + verify. The release is named
-      # after the bare version; gh release create refuses to overwrite an
-      # existing release, so stable tags stay immutable.
-      - name: Publish the release
+      - name: Publish verified image and commit list
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          BASE=$(cat VERSION)
-          SHA=$(git rev-parse HEAD)
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$BASE" \
-            --notes "Stable release $BASE (tag $GITHUB_REF_NAME, commit \`$SHA\`).
-
-Built and fully tested by CI from the exact tag (\`./build.sh --test\`, channel \`release\`).
-Shown on the device under Settings > Information as \`$BASE-release\` / \`$GITHUB_REF_NAME\`.
-
-Artifact: \`MECHEN_M30.HEX\` (standard firmware filename)." \
-            --files build/MECHEN_M30.HEX
+          previous=$(git describe --tags --abbrev=0 --exclude=nightly HEAD^)
+          cat "docs/releases/$GITHUB_REF_NAME.md" > "$RUNNER_TEMP/notes.md"
+          printf '\n## Commits\n\n' >> "$RUNNER_TEMP/notes.md"
+          git log --reverse --format='- %h %s' "$previous..HEAD" >> "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" build/MECHEN_M30.HEX --verify-tag \
+            --title "$GITHUB_REF_NAME-release" --notes-file "$RUNNER_TEMP/notes.md"
