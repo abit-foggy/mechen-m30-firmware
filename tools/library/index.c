@@ -179,6 +179,9 @@ static void name(const char *s)                 /* as FUN_40194c00: BOM then UTF
     while (*s) { *p++ = *s++; *p++ = 0; }
     *p++ = 0; *p = 0;
 }
+#ifdef SD_THEME
+#include "../theme/scan_icon.h"
+#endif
 #ifndef PROBE
 static void tmp_delete(void)                    /* by the long name (works on the exFAT card) and
                                                    the 8.3 name (FAT32) */
@@ -213,6 +216,9 @@ static void setup(void)
     /* MUSIC.TMP with its own handle, or else the tail of the library.  A leftover from an
      * interrupted update is deleted first: the kernel cannot extend a file past the size it
      * was created with, and a leftover may be smaller than this card needs */
+#ifdef SD_THEME
+    load_sd_icon();
+#endif
     FS_OP(G.ctx, 0x3a, 0, 0, 0);                /* the root directory */
 #ifndef PROBE
     tmp_delete();
