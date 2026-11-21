@@ -124,6 +124,10 @@ static __attribute__((noinline)) u32 m3u_scan_entry(u8 *sec, u32 want)
         if (off == 0 && n >= 3 && sec[0] == 0xEFu && sec[1] == 0xBBu && sec[2] == 0xBFu) {
             pos = 3;
         }
+#if defined(M3U_BROWSER) && defined(M30_COVERFLOW)
+        if (!off && want==0xffffffffu && !row_out)
+            VD->flow_pack=flow_header(sec+pos,n-pos);
+#endif
         while (pos < lim) {
             u8 c = (pos < n) ? sec[pos] : (u8)'\n';
             pos++;

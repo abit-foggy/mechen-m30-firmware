@@ -54,7 +54,8 @@ struct vnode {
  * unterminated final line! */
 static const char idk_m3u[] =
     "\xEF\xBB\xBF"
-    "#EXTM3U\n"
+    "#EXTM3U\r\n"
+    "#CF7=123B6D9\r\n"
     "#EXTINF:210,Very long comment line 1 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------\n"
     "#EXTINF:210,Padding comment to push playlist across multiple 512-byte sectors ============================================================================================================================================================================================================\n"
     "#EXTINF:210,More multi-sector padding ====================================================================================================================================================================================================================================================\n"
@@ -460,6 +461,10 @@ int main(void)
           && *(u16 *)(desc + 0x5C) == 9 && *(u16 *)(desc + 0x5E) == 1,
           "desc + VS armed for track #1 (04 - crash.flac, 1/9)");
 
+#ifdef M30_COVERFLOW
+    check(bw.vd.flow_pack==0x123b6d9 && vs.flow_pack==bw.vd.flow_pack,
+          "prepared playlist publishes its cover pack on playback");
+#endif
     /* 4. Click missing track #2 inside virtual folder -> skips forward to track #3! */
     *(u16 *)(state + 0x0E) = 2;
     *(u16 *)(state + 0x10) = 2;

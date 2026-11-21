@@ -116,6 +116,10 @@ u32 m3u_file_click(u8 *arg0, u8 *state)
         vs->count = (u16)count;
         vs->shuf_key = 0;
         vs->shuf_pos = 0;
+#ifdef M30_COVERFLOW
+        vs->flow_pack=vd->flow_pack;
+        vs->handoff=M3U_HANDOFF_CLICK;
+#endif
         vs->magic = M3UPLAY_MAGIC;
 
         vfs((u32)vd->pl_dir, (u32)vd->pl_off, 1u, OP_OFFSET);
@@ -170,4 +174,7 @@ static u32 scan_count_cb(void)
     return m3u_scan_ex(BW->sec, 0xFFFFFFFFu, 0, 0);
 }
 
+#ifdef M30_COVERFLOW
+#include "../coverflow/marker.h"
+#endif
 #include "m3u_resolve.h"

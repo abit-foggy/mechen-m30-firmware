@@ -41,6 +41,10 @@
 #ifndef M3UPLAY_H
 #define M3UPLAY_H
 
+#define M3UPLAY_WAITING 0x4d335657
+#define M3U_HANDOFF_CLICK 1
+#define M3U_HANDOFF_MISMATCH 2
+#define M3U_HANDOFF_OFFSET 0x160
 #define M3UPLAY_MAGIC_RAW 0x4D335650
 #define M3UVD_MAGIC_RAW   0x4D335644
 #define M3U_LINE_CAP      240           /* max UTF-8 track path bytes (card max: 168) */
@@ -89,10 +93,11 @@ struct vdir_state {
     u8   pl_off[8];             /* +0x08: 8-byte VFS file_off of the .m3u */
     u8   pl_dir[76];            /* +0x10: 73-byte VFS dir_stack of the .m3u (+3 pad) */
     u8   title[52];             /* +0x5C: 50-byte display title of the .m3u (+2 pad) */
+    u32 flow_pack;              /* +0x90: cover-pack tag in the prepared playlist */
 };
 
 /* Shared playback state in the exfatn.drv resident zero run (0xBFC17274..0xBFC173F8,
- * file 0x874..0x9F8 = 0x184 = 388 bytes). sizeof(struct vstate) = 0x15C (348 B). */
+ * file 0x874..0x9F8 = 0x184 = 388 bytes). sizeof(struct vstate) = 0x160 (352 B). */
 struct vstate {
     u32  magic;                 /* +0x00: M3UPLAY_MAGIC when a playlist is playing */
     u16  pos;                   /* +0x04: 1-based current entry index (1..count) */
@@ -105,7 +110,11 @@ struct vstate {
     u8   pl_dir[76];            /* +0x1C: 73-byte VFS dir_stack of the .m3u (+3 pad) */
     u32  shuf_pos;              /* +0x68: current Feistel domain cursor */
     char line[M3U_LINE_CAP];    /* +0x6C: UTF-8 path buffer for mengine */
+    u32 flow_pack;              /* +0x15c: prepared artwork pack, zero for ordinary playlists */
+    u32 handoff;                /* last playlist selection or engine mismatch */
 };
+
+_Static_assert(__builtin_offsetof(struct vstate,handoff)==M3U_HANDOFF_OFFSET,"handoff offset for engine trampoline");
 
 struct brow_fsel {
     u8   mode;                  /* +0x00 (0x9FC15734) */

@@ -188,7 +188,8 @@ def main():
                            input="int main(void){return 0;}\n",
                            capture_output=True, text=True, cwd=work)
     check(probe.returncode == 0, "host toolchain builds 32-bit (-m32)")
-    run([hostcc, "-m32", "-DM3UPLAY_TEST", "-I" + HERE, "-O1", "-Wall", "-Wextra",
+    flow_def = ["-DM30_COVERFLOW"] if os.environ.get("M30_COVERFLOW_TEST") == "1" else []
+    run([hostcc, "-m32", *flow_def, "-DM3UPLAY_TEST", "-I" + HERE, "-O1", "-Wall", "-Wextra",
          "-o", "hosttest",
          os.path.join(HERE, "m3uplaytest.c"),
          os.path.join(HERE, "m3uplay.c"),
@@ -310,7 +311,7 @@ u32 m3u_test_stock_setloc(u8 *d, u32 b) {
     (void)d; (void)b;
     *(volatile u16 *)0x10002226u = 2;
     *(volatile u16 *)0x10002224u = 2;
-    return 1;
+    return !b;
 }
 __attribute__((section(".r7_stubs")))
 u32 m3u_test_stock_next(u32 *o) { (void)o; ST[3] = 10; return 1; }
@@ -405,7 +406,10 @@ void _start(void) {
     vs->cur_off[1] = 0x55667788u;
     *(u32 *)(arg0 + 4 + 8) = 0x11223344u;
     *(u32 *)(arg0 + 4 + 12) = 0x55667788u;
+    if (setloc(arg0+4,1) || vs->magic!=M3UPLAY_WAITING) sys3(4001, 37, 0, 0);
+    nextf(0); if (ST[3]!=10) sys3(4001, 38, 0, 0);
     setloc(arg0 + 4, 0);
+    if (vs->magic!=M3UPLAY_MAGIC) sys3(4001, 39, 0, 0);
     if (*(volatile u16 *)0x10002226u != 78 || *(volatile u16 *)0x10002224u != 1) sys3(4001, 31, 0, 0);
     nextf(0); if (ST[3] != 110) sys3(4001, 32, 0, 0);
     prevf(0); if (ST[3] != 120) sys3(4001, 33, 0, 0);
@@ -413,7 +417,7 @@ void _start(void) {
 
     *(u32 *)(arg0 + 4 + 8) = 0x99999999u;
     setloc(arg0 + 4, 0);
-    if (vs->magic != 0 || *(volatile u16 *)0x10002226u != 2) sys3(4001, 35, 0, 0);
+    if (vs->magic != 0 || vs->handoff!=M3U_HANDOFF_MISMATCH || *(volatile u16 *)0x10002226u != 2) sys3(4001, 35, 0, 0);
     nextf(0); if (ST[3] != 10) sys3(4001, 36, 0, 0);
 
     sys3(4004, 1, (long)"QEMU OK\\n", 8);

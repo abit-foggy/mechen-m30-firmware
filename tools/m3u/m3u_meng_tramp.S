@@ -46,11 +46,15 @@ m3u_setloc_0:
 	nop
 	move	$s1, $v0		/* ok */
 	lw	$a2, .Lvs
-	beqz	$s1, .Ldisarm
 	lw	$v0, 0($a2)		/* VS->magic */
 	lw	$v1, .Lmagic
 	cmp	$v0, $v1
+	bteqz	.Lknown
+	lw	$v1, .Lwaiting
+	cmp	$v0, $v1
 	btnez	.Lset_out
+.Lknown:
+	beqz	$s1, .Lwait
 	lw	$v0, 8($s0)		/* desc->file_off[0..3] */
 	lw	$v1, 0xC($a2)		/* VS->cur_off[0] */
 	cmp	$v0, $v1
@@ -59,6 +63,8 @@ m3u_setloc_0:
 	lw	$v1, 0x10($a2)		/* VS->cur_off[1] */
 	cmp	$v0, $v1
 	btnez	.Ldisarm
+		lw $v0, .Lmagic
+	sw $v0, 0($a2)
 	/* Match: override folder count/pos with playlist count/pos. */
 	lw	$a3, .Leng		/* 0x9FC15F20 */
 	lhu	$v0, 6($a2)		/* VS->count */
@@ -66,7 +72,15 @@ m3u_setloc_0:
 	sh	$v0, 6($a3)		/* COUNT (0x9FC15F26) */
 	sh	$v1, 4($a3)		/* POS   (0x9FC15F24) */
 	b	.Lset_out
+.Lwait:
+    /* No new file was accepted. Keep the selection available for validation
+     * on retry. Next/Prev only route to M3U when magic is fully active. */
+    lw $v0, .Lwaiting
+    sw $v0, 0($a2)
+    b .Lset_out
 .Ldisarm:
+    li $v0, M3U_HANDOFF_MISMATCH
+    sw $v0, M3U_HANDOFF_OFFSET($a2)
 	li	$v0, 0
 	sw	$v0, 0($a2)		/* VS->magic = 0 */
 .Lset_out:
@@ -122,5 +136,6 @@ m3u_prev_0:
 
 	.balign	4
 .Lvs:		.word	M_VSTATE
+.Lwaiting: .word M3UPLAY_WAITING
 .Lmagic:	.word	M3UPLAY_MAGIC
 .Leng:		.word	M_ENG

@@ -195,6 +195,9 @@ u32 m3u_vdir_setloc(const u8 *loc, u32 flag)
             && b_vfs((u32)vs->pl_dir, (u32)vs->pl_off, 1u, OP_OFFSET)) {
         b_copy(vd->pl_off, vs->pl_off, 84u);
         vd->count = vs->count;
+#ifdef M30_COVERFLOW
+        vd->flow_pack = vs->flow_pack;
+#endif
         vd->pl_layer = vs->pl_layer;
         vd->disk = vs->disk;
         vd->title[0] = 0;
