@@ -87,8 +87,6 @@ def group_a(stock, patched, version, ident, channel):
         allowed.update(range(f(g), f(g) + 2))
     for g in (pv.VER_SLOT, pv.IDENT_SLOT):
         allowed.update(range(f(g), f(g) + pv.SLOT))
-    check(d[:fo] == r[:fo],
-          '.ap header, bank table and earlier banks untouched (vendor metadata preserved; file %#x..)' % fo)
     for g, want in pv.STOCK_STR.items():
         check(bytes(r[f(g):f(g) + len(want)]) == want,
               'stock string at %#x left in place: %r' % (g, want))
@@ -111,6 +109,8 @@ def group_a(stock, patched, version, ident, channel):
         check(r1.returncode == 0 and r2.returncode == 0 and open(p1, 'rb').read() == open(p2, 'rb').read(),
               'patch is deterministic (identical output for identical inputs)')
         d1 = open(p1, 'rb').read()
+        check(d[:fo] == d1[:fo],
+              'version patch preserves the original header, bank table and earlier banks')
         diff = [i for i in range(len(d)) if d[i] != d1[i]]
         check(set(diff) <= allowed,
               'patching stock changes only the 2 la halfwords + 2 tail slots (%d bytes)' % len(diff))

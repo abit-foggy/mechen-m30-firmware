@@ -4,6 +4,8 @@
 # usage: ./build.sh [--test] [--no-playall] [--no-keys] [--no-library] [--theme DIR]
 #                   STOCK_MECHEN_M30.HEX [OUTDIR]
 #   --test        also run the harnesses (shuffle, shuffle all, scroll, keys, library, m3u vis/hook, version)
+#   --coverflow   enable prepared M3U Cover Flow in the Now Playing artwork pane
+#   --sd-theme    load the selected Now Playing icon during the library scan
 #   --theme DIR   repaint UI bitmaps from the theme in DIR (tools/theme/sty.py), a folder of
 #                 <sty>_<bitmap-index>.ppm images
 #   --no-playall  leave out shuffle-all mode
@@ -32,10 +34,14 @@
 #                                      see docs/versioning.md; metadata lands in OUTDIR/version.json)
 set -euo pipefail
 
+COVERFLOW=0
+SD_THEME=0
 TEST=0 PLAYALL=1 KEYS=1 LIBRARY=1 M3UHOOK=1 M3UVIS=1 M3UPLAY=1 VERSION_PATCH=1 THEME= LIB_MAX=24000 LIB_SRC=index.c LIB_PREALLOC= LIB_DEFS= PROBE=0
 while [ $# -gt 0 ]; do
   case $1 in
     --test) TEST=1; shift ;;
+    --coverflow) COVERFLOW=1; shift ;;
+    --sd-theme) SD_THEME=1; shift ;;
     --theme) THEME=$2; shift 2 ;;
     --no-playall) PLAYALL=0; shift ;;
     --no-keys) KEYS=0; shift ;;
@@ -87,7 +93,9 @@ blob() {  # NAME SOURCE ADDR [CFLAGS...]: compile one MIPS16e unit linked at ADD
   "${CROSS}objcopy" --set-section-alignment .text=4 "$n.raw.o" "$n.o"
   # string literals and const tables (.rodata) go right after the code: the blob is only what
   # the linker puts in .text, and the firmware has nowhere else to load from
-  printf 'SECTIONS { . = %s; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' "$at" > "$n.ld"
+  # Keep input alignment padding inside the section copied into firmware.
+  printf 'SECTIONS { .text %s : { *(.text .text.*) *(.rodata .rodata.*) }\n' "$at" > "$n.ld"
+  printf ' ASSERT(ADDR(.text) == %s, "blob load address mismatch")\n' "$at" >> "$n.ld"
   printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> "$n.ld"
   "${CROSS}ld" -EL -m elf32ltsmip -T "$n.ld" -e "$at" -o "$n.elf" "$n.o"
   [ -z "$("${CROSS}size" -A "$n.elf" | awk '$1 ~ /^\.(s?data|s?bss)/ && $2 > 0')" ] || { echo "$n: has writable data, which a blob can't carry"; exit 1; }
@@ -169,7 +177,9 @@ if [ $M3UPLAY = 1 ]; then
   echo "== browser.ap + mengine.ap: virtual-folder M3U browser + track stepper"
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -DM3U_SYM_CLICK=0x71252501 -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o
-  "${CROSS}gcc" $CFLAGS -I"$T/m3u" -c -o m3u_brow.raw.o "$T/m3u/m3u_brow.c"
+  FLOW_DEF=
+  if [ "$COVERFLOW" = 1 ]; then FLOW_DEF=-DM30_COVERFLOW; fi
+  "${CROSS}gcc" $CFLAGS $FLOW_DEF -I"$T/m3u" -c -o m3u_brow.raw.o "$T/m3u/m3u_brow.c"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3u_brow.raw.o m3u_brow.o
   printf 'SECTIONS { . = 0x485946C0; .text : { *(.text .text.*) *(.rodata .rodata.*) }\n' > m3u_brow.ld
   printf ' /DISCARD/ : { *(.MIPS.abiflags) *(.reginfo) *(.pdr) *(.comment) *(.gnu.attributes) *(.mdebug*) } }\n' >> m3u_brow.ld
@@ -183,7 +193,7 @@ if [ $M3UPLAY = 1 ]; then
   SYM_BSET=$(( 0x$(sym m3u_brow.elf m3u_vdir_setloc) | 1 ))
   SYM_BDIR=$(( 0x$(sym m3u_brow.elf m3u_vdir_dir_op) | 1 ))
 
-  blob m3uplay "$T/m3u/m3uplay.c" 0x71252500 $PROBE_DEF -I"$T/m3u" -DM3U_SYM_OPEN=$SYM_OPEN -DM3U_SYM_FMT=$SYM_FMT
+  blob m3uplay "$T/m3u/m3uplay.c" 0x71252500 $FLOW_DEF $PROBE_DEF -I"$T/m3u" -DM3U_SYM_OPEN=$SYM_OPEN -DM3U_SYM_FMT=$SYM_FMT
   [ "$(sym m3uplay.elf m3u_file_click)" = "71252500" ] || { echo "m3u_file_click is not at 0x71252500: $(sym m3uplay.elf m3u_file_click)"; exit 1; }
   [ "$(stat -c %s m3uplay.bin)" -le $((0x800)) ] || { echo "m3uplay blob too big: $(stat -c %s m3uplay.bin) > 0x800"; exit 1; }
   SYM_BITM=$(( 0x$(sym m3uplay.elf m3u_vdir_get_items) | 1 ))
@@ -226,8 +236,10 @@ if [ $VERSION_PATCH = 1 ]; then
   CHANNEL=${BUILD_CHANNEL:-dev}
   # the config string is folded into the dev build ID, so every build option that
   # changes the firmware changes the identifier shown on the device
-  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS m3uplay=$M3UPLAY probe=$PROBE lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none}"
+  CONFIG="playall=$PLAYALL keys=$KEYS library=$LIBRARY m3uhook=$M3UHOOK m3uvis=$M3UVIS m3uplay=$M3UPLAY probe=$PROBE lib_max=$LIB_MAX lib_src=$LIB_SRC theme=${THEME:-none} indexing=manual-default"
   echo "== setting.ap: Information screen version (channel $CHANNEL)"
+  if [ "$SD_THEME" = 1 ]; then CONFIG="$CONFIG sd_theme=icon-v1"; fi
+  if [ "$COVERFLOW" = 1 ]; then CONFIG="$CONFIG coverflow=m3u-v1"; fi
   VMETA=$("$PY" -I "$T/version/version.py" --channel "$CHANNEL" --config "$CONFIG" --out "$OUT/version.json") || {
     echo "   channel $CHANNEL rejected by tools/version/version.py (nightly/release need a clean, correctly tagged tree)"; exit 2; }
   eval "$VMETA"
@@ -242,6 +254,7 @@ if [ $VERSION_PATCH = 1 ]; then
   # its FWIMAGE.FW slot (the content tail shifts inside the fixed-size file)
   cp "$F/setting.sty" setting.sty
   "$PY" -I "$T/version/patch_label.py" setting.sty setting.sty | sed 's/^/   /'
+  if [ "$TEST" = 1 ]; then cp setting.sty version-label.sty; fi
   case " $PATCHED " in *" setting.sty "*) ;; *) PATCHED="$PATCHED setting.sty" ;; esac
 fi
 
@@ -259,8 +272,38 @@ if [ $KEYS = 1 ]; then
   echo "   hook 0x486947d0 -> keypass at 0x48694b80 in $KEY_APPS"
 fi
 
+if [ "$SD_THEME" = 1 ]; then
+  [ "$LIBRARY:$LIB_SRC:$LIB_DEFS" = "1:index.c:" ] || { echo "SD theme needs the normal library builder"; exit 2; }
+  LIB_DEFS=-DSD_THEME
+  blob listicon "$T/theme/list_icon.c" 0x26409800
+  blob showicon "$T/theme/show_icon.c" 0x263c9874
+  blob textback "$T/theme/text_backdrop.c" 0x263c9a00
+  blob walldraw "$T/theme/wall_draw.c" 0x261c9698 "-DLIST_ICON_ENTRY=(0x$(sym listicon.elf list_icon)|1u)"
+  "$PY" -I "$T/theme/patch_driver.py" "$F/drv_ui.drv" showicon.bin drv_ui.drv "$(sym walldraw.elf draw_wall)" "$(sym walldraw.elf clear_wall)" "$(sym textback.elf text_backdrop)"
+  blob wall_music "$T/theme/wall_load.c" 0x40354e00 -DPREF_FS=0xbfc16bb5
+  blob wall_setting "$T/theme/wall_load.c" 0x40094f00 -DPREF_FS=0xbfc1658d
+  blob wall_config "$T/theme/wall_load.c" 0x71252600 -DPREF_FS=0xbfc1658d
+  blob prefs_music "$T/theme/preferences.c" 0x40654d80 -DPREF_FS=0xbfc16bb5 -DPREF_SYS=0xbfc16bb1 "-DWALL_ENTRY=(0x$(sym wall_music.elf load_wall)|1u)" "-DSAVE_ENTRY=(0x$(sym wall_music.elf save)|1u)"
+  blob prefs_setting "$T/theme/preferences.c" 0x40014d00 -DPREF_FS=0xbfc1658d -DPREF_SYS=0xbfc16585 -DPREF_SETTING "-DWALL_ENTRY=(0x$(sym wall_setting.elf load_wall)|1u)" "-DSAVE_ENTRY=(0x$(sym wall_setting.elf save)|1u)"
+  blob prefs_config "$T/theme/preferences.c" 0x71152600 -DPREF_FS=0xbfc1658d -DPREF_SYS=0xbfc16585 "-DWALL_ENTRY=(0x$(sym wall_config.elf load_wall)|1u)" "-DSAVE_ENTRY=(0x$(sym wall_config.elf save)|1u)"
+  blob restore "$T/theme/picker.c" 0x40414d00 -DMUSIC_RESTORE "-DPREF_ENTRY=(0x$(sym prefs_music.elf preferences)|1u)"
+  "$PY" -I "$T/theme/patch_restore.py" music.ap restore.bin "$(sym restore.elf music_mount)"
+  blob picker "$T/theme/picker.c" 0x40294e50 "-DPREF_ENTRY=(0x$(sym prefs_setting.elf preferences)|1u)"
+  blob discover "$T/theme/discover.c" 0x40214e00 "-DPICK_APPLY=0x$(sym picker.elf choose)"
+  for f in setting.ap setting.sty setting.mcg; do
+    [ -f "$f" ] || cp "$F/$f" "$f"
+    case " $PATCHED " in *" $f "*) ;; *) PATCHED="$PATCHED $f" ;; esac
+  done
+  "$PY" -I "$T/theme/patch_picker.py" setting.ap setting.sty setting.mcg picker.bin discover.bin \
+    "$(sym discover.elf theme_menu)" "$(sym picker.elf theme_stock)" "$(sym discover.elf theme_apply)" "$(sym discover.elf theme_next)"
+  cp "$F/config.ap" config.ap
+  "$PY" -I "$T/theme/patch_prefs.py" "$(sym prefs_music.elf apply_preferences)" \
+    "$(sym prefs_setting.elf apply_preferences)" "$(sym prefs_config.elf apply_preferences)" \
+    "$(sym prefs_setting.elf shuffle_off)" "$(sym prefs_setting.elf shuffle_on)"
+  PATCHED="$PATCHED drv_ui.drv config.ap"
+fi
 if [ $LIBRARY = 1 ]; then
-  echo "== playlist.ap: whole-card library (up to $LIB_MAX songs$([ $LIB_SRC != index.c ] && echo ", DIAGNOSTIC BUILD: $LIB_SRC")$([ -n "$LIB_DEFS" ] && echo ", DIAGNOSTIC PROBE BUILD"))"
+  echo "== playlist.ap: whole-card library (up to $LIB_MAX songs$([ $LIB_SRC != index.c ] && echo ", DIAGNOSTIC BUILD: $LIB_SRC")$([ "$LIB_DEFS" = -DPROBE ] && echo ", DIAGNOSTIC PROBE BUILD"))"
   blob libindex "$T/library/$LIB_SRC" 0xbfc3c000 $LIB_DEFS
   blob libload "$T/library/loader.c" 0x400d5290
   # the stock caller jumps to the first byte of each blob: the entry function must be first
@@ -309,6 +352,26 @@ d[0x12aa0:0x12aa0+len(body)] = body
 p.write_bytes(d)
 PYGATE
 fi
+echo "== community playback fixes and Settings > Library indexing"
+for f in config.ap udisk.ap mainmenu.ap setting.ap setting.mcg setting.sty; do
+  [ -f "$f" ] || cp "$F/$f" "$f"
+  case " $PATCHED " in *" $f "*) ;; *) PATCHED="$PATCHED $f" ;; esac
+done
+blob indexflag "$T/community/index_gate.S" 0
+blob indexevent "$T/community/index_gate.S" 0 -DINSERT_EVENT
+blob indexmenu "$T/community/index_menu.c" 0x402d5000
+"$PY" -I "$T/community/port.py" "$(sym indexflag.elf allowed)" "$(sym indexflag.elf suppressed)" \
+  "$(sym indexevent.elf allowed)" "$(sym indexevent.elf suppressed)" "$(sym indexmenu.elf index_menu)" \
+  "$(sym indexmenu.elf index_manual)" "$(sym indexmenu.elf index_auto)"
+
+if [ "$COVERFLOW" = 1 ]; then
+  [ "$M3UPLAY:$M3UVIS" = 1:1 ] || { echo "Cover Flow needs M3U playback and visibility"; exit 2; }
+  blob flow_queue "$T/coverflow/queue.c" 0x403d4f10
+  blob flow_cache "$T/coverflow/cache.c" 0x48514720
+  blob flow_draw "$T/coverflow/render.c" 0x7829b5f0
+  blob flow_device "$T/coverflow/device.c" 0x40594fa0 "-DFLOW_QUEUE_ENTRY=(0x$(sym flow_queue.elf flow_tracks)|1u)" "-DFLOW_CACHE_ENTRY=(0x$(sym flow_cache.elf flow_cache)|1u)" "-DFLOW_DRAW_ENTRY=(0x$(sym flow_draw.elf flow_render)|1u)"
+  "$PY" -I "$T/coverflow/patch.py" "$(sym flow_device.elf coverflow_refresh)" "$(sym flow_device.elf coverflow_bypass)"
+fi
 echo "== repack"
 "$PY" -I "$T/repack_fw.py" "$STOCK" "$W/stock/dec.bin" "$OUT/MECHEN_M30.HEX" \
   $(for f in $PATCHED; do printf '%s=%s ' $f $f; done) | tail -n 1 | sed 's/^/   /'
@@ -327,7 +390,11 @@ echo "   files changed from stock: $changed"
 "$PY" -I "$T/refscan.py" mengine.ap 0x7300:0x7b068000:0x800 0x7b00:0x7b0a8000:0x500 0x8d00:0x7b1a8000:0x800 > refscan.txt
 
 if [ $TEST = 1 ]; then
+  if [ "$COVERFLOW" = 1 ]; then
+    CROSS="$CROSS" QEMU="$QEMU" "$PY" -I "$T/coverflow/test_packed.py" "$W"
+  fi
   echo "== QEMU tests"
+  CROSS="$CROSS" QEMU="$QEMU" "$PY" -I "$T/community/test_policy.py" "$W/verify/fw"
   "${CROSS}gcc" $HFLAGS -c -o harness_sh.o "$T/shuffle/harness.c"
   blob shuffle_test "$T/shuffle/shuffle.c" 0x7b1a808c -DTEST -DTEST_RAM=0x10000000u -DTEST_RAND=0x00500000u
   mkdir -p t_shuffle && cp harness_sh.o t_shuffle/harness.o && cp shuffle_test.o t_shuffle/
@@ -408,7 +475,7 @@ if [ $TEST = 1 ]; then
     M30_BTRAMP_BIN=$PWD/m3u_brow_tramp.bin M30_BTRAMP_ELF=$PWD/m3u_brow_tramp.elf \
     M30_MTRAMP_BIN=$PWD/m3u_meng_tramp.bin M30_MTRAMP_ELF=$PWD/m3u_meng_tramp.elf \
     M30_MSTEP_BIN=$PWD/m3u_meng.bin M30_MSTEP_ELF=$PWD/m3u_meng.elf \
-      CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/test_m3uplay.py" "$F/browser.ap" browser.ap "$F/mengine.ap" mengine.ap > test_m3uplay.txt 2>&1 || true
+      M30_COVERFLOW_TEST=$COVERFLOW CROSS=$CROSS QEMU=$QEMU "$PY" -I "$T/m3u/test_m3uplay.py" "$F/browser.ap" browser.ap "$F/mengine.ap" mengine.ap > test_m3uplay.txt 2>&1 || true
     grep -q 'test_m3uplay: OK' test_m3uplay.txt && echo 'ALL PASS' >> test_m3uplay.txt || true
     echo "   m3uplay:  $(grep -c '^PASS' test_m3uplay.txt) checks, $(tail -n 1 test_m3uplay.txt)"
   fi
@@ -416,7 +483,7 @@ if [ $TEST = 1 ]; then
     "$PY" -I "$T/version/test_version.py" "$F/setting.ap" setting.ap "$VERSION" "$IDENT" "$CHANNEL" > test_version.txt 2>&1 || true
     grep -q 'test_version: OK' test_version.txt && echo 'ALL PASS' >> test_version.txt || true
     echo "   version:  $(grep -c '^PASS' test_version.txt) checks, $(tail -n 1 test_version.txt)"
-    "$PY" -I "$T/version/test_label.py" "$F/setting.sty" setting.sty > test_label.txt 2>&1 || true
+    "$PY" -I "$T/version/test_label.py" "$F/setting.sty" version-label.sty > test_label.txt 2>&1 || true
     grep -q 'test_label: OK' test_label.txt && echo 'ALL PASS' >> test_label.txt || true
     echo "   label:    $(grep -c '^PASS' test_label.txt) checks, $(tail -n 1 test_label.txt)"
   fi
