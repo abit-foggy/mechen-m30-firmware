@@ -6,6 +6,7 @@
 !/LICENSE
 !/VERSION
 !/build.sh
+!/upload.py
 !/tools/
 !/patches/
 !/docs/
