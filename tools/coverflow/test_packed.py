@@ -31,7 +31,7 @@ def run(work, pack, output=None):
             # Change kernel-space globals and service pointers only. All
             # internal branches, linked addresses and the LCD renderer survive.
             for old,new in {
-                0xbfc17274:0x11000000,0xbfc16bb1:0x500000,
+                0xbfc10880:0x11000000,0xbfc16bb1:0x500000,
                 0xbfc16bb5:0x501000,0x4805447d:0x502000,
                 **{0x9fc00000+x:0x10000000+x for x in
                    (0xbf50,0xbf54,0xbf84,0xbf98,0x15418,0x15b20,0x15f23,0x15f39)},

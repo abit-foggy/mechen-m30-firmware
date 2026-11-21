@@ -174,6 +174,7 @@ if [ $M3UHOOK = 1 ]; then
 fi
 
 if [ $M3UPLAY = 1 ]; then
+  "$PY" -I "$T/m3u/check_state_region.py" "$F"
   echo "== browser.ap + mengine.ap: virtual-folder M3U browser + track stepper"
   "${CROSS}gcc" $CFLAGS -I"$T/m3u" -DM3U_SYM_CLICK=0x71252501 -x assembler-with-cpp -c -o m3uplay_tramp.raw.o "$T/m3u/m3uplay_tramp.S"
   "${CROSS}objcopy" --set-section-alignment .text=4 m3uplay_tramp.raw.o m3uplay_tramp.o

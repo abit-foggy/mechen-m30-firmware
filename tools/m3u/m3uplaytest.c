@@ -394,7 +394,7 @@ int main(void)
     test_meng_sec = meng_sec;
     *(u32 *)(meng_eng + 0x34) = 0xE1u;
 
-    check(sizeof(struct vstate) <= 0x184, "sizeof(struct vstate) fits in 0x184-byte exfatn zero run");
+    check(sizeof(struct vstate) <= M3U_STATE_CAPACITY, "sizeof(struct vstate) fits in the key driver resident padding");
     check(sizeof(struct brow_work) <= 0x390, "sizeof(struct brow_work) fits in 0x9FC15830..0x9FC15BC0");
     check(sizeof idk_m3u - 1 > 1024 && ((sizeof idk_m3u - 1) & 511u) != 0,
           "idk.m3u spans 3 sectors with non-512-aligned EOF");

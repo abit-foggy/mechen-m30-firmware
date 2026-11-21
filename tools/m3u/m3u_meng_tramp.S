@@ -24,7 +24,7 @@
 #define STOCK_BYNO      m3u_test_stock_byno
 #define M3U_STEP        m3u_meng_step
 #else
-#define M_VSTATE        0xBFC17274
+#define M_VSTATE        M3U_STATE_ADDRESS
 #define M_ENG           0x9FC15F20
 #define STOCK_SETLOC    0x7B0685F4
 #define STOCK_NEXT      0x7B068000

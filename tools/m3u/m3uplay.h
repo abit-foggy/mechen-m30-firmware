@@ -18,7 +18,7 @@
  *        * Clicking track k inside an open .m3u virtual folder resolves entry
  *          k-1 across folders ('/', '\\', '..', UTF-8 LFNs), fills arg0+4's
  *          0xA4-byte file_location_t, publishes the playlist to VS
- *          (0xBFC17274, exfatn.drv zero tail), and returns 0x8001 to launch
+ *          (0xBFC10880, key.drv resident tail), and returns 0x8001 to launch
  *          music.ap immediately.
  *        * Clicking any non-.m3u file in a normal folder tail-calls stock
  *          0x4875493C (Play/Delete prompt) unchanged.
@@ -41,6 +41,8 @@
 #ifndef M3UPLAY_H
 #define M3UPLAY_H
 
+#define M3U_STATE_ADDRESS 0xBFC10880
+#define M3U_STATE_CAPACITY 0x180
 #define M3UPLAY_WAITING 0x4d335657
 #define M3U_HANDOFF_CLICK 1
 #define M3U_HANDOFF_MISMATCH 2
@@ -96,8 +98,7 @@ struct vdir_state {
     u32 flow_pack;              /* +0x90: cover-pack tag in the prepared playlist */
 };
 
-/* Shared playback state in the exfatn.drv resident zero run (0xBFC17274..0xBFC173F8,
- * file 0x874..0x9F8 = 0x184 = 388 bytes). sizeof(struct vstate) = 0x160 (352 B). */
+/* Shared playback state in key.drv resident padding, outside the card driver overlays. */
 struct vstate {
     u32  magic;                 /* +0x00: M3UPLAY_MAGIC when a playlist is playing */
     u16  pos;                   /* +0x04: 1-based current entry index (1..count) */
@@ -114,6 +115,7 @@ struct vstate {
     u32 handoff;                /* last playlist selection or engine mismatch */
 };
 
+_Static_assert(sizeof(struct vstate)<=M3U_STATE_CAPACITY,"playlist state exceeds resident padding");
 _Static_assert(__builtin_offsetof(struct vstate,handoff)==M3U_HANDOFF_OFFSET,"handoff offset for engine trampoline");
 
 struct brow_fsel {
@@ -145,7 +147,7 @@ extern struct brow_work *test_bw;
 #define BW (test_bw)
 #define VD (&test_bw->vd)
 #else
-#define VS ((volatile struct vstate *)0xBFC17274u)
+#define VS ((volatile struct vstate *)M3U_STATE_ADDRESS)
 #define BW ((struct brow_work *)0x9FC15830u)
 #define VD ((struct vdir_state *)0x9FC15B20u)
 #endif
