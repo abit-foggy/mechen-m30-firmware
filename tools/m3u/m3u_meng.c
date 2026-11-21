@@ -6,6 +6,7 @@
  * this bank runs.
  */
 #include "m3uplay.h"
+#include "shuffle_index.h"
 
 struct eng_state {
     u8  mode;       /* +0x00 (0x9FC15F20) */
@@ -167,17 +168,7 @@ static u32 shuf_pick(u32 count, u32 op, int repeat_all)
             p--;
         }
         {
-            u32 idx = p - 1u;
-            u32 l = idx >> h;
-            u32 r = idx & mask;
-            u32 r_i;
-            for (r_i = 0; r_i < 4u; r_i++) {
-                u32 f = (r ^ key ^ (r_i * 0x9Du)) * 0x9E37u;
-                u32 t = l ^ ((f ^ (f >> 8)) & mask);
-                l = r;
-                r = t;
-            }
-            idx = (l << h) | r;
+            u32 idx = m3u_shuffle_index(p,h,mask,key);
             if (idx < count) {
                 vs->shuf_pos = p;
                 return idx + 1u;
