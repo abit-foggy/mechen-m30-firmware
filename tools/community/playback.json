@@ -1,0 +1,106 @@
+[
+  {
+    "fix": "End-of-track ASRC drain",
+    "release": "1.101.11",
+    "member": "mengine.ap",
+    "offset": "0x98c",
+    "before": "42b2409a609a47996eea015a0961",
+    "after": "4fb2409a086b6cea00f00a2a0065"
+  },
+  {
+    "fix": "End-of-track ASRC drain",
+    "release": "1.101.11",
+    "member": "mengine.ap",
+    "offset": "0xabc",
+    "before": "91643d6703b3016a40c3b9651164a0e83e5cc19f",
+    "after": "02b2016b60c220e83e5cc19f500016c000650065"
+  },
+  {
+    "fix": "CUE Repeat Folder",
+    "release": "1.101.11",
+    "member": "music.ap",
+    "offset": "0x9f5c",
+    "before": "5867015a2261",
+    "after": "246004720a60"
+  },
+  {
+    "fix": "Final CUE track backward seek",
+    "release": "1.200.00",
+    "member": "music.ap",
+    "offset": "0xaa90",
+    "before": "60f040a102725867015a066041b2419a7df4184a48d903103eb2409a48d9",
+    "after": "0e1060f040a1fe4a052a42b2419a7df4184a02103fb2409a48d93eb24010"
+  },
+  {
+    "fix": "Final CUE track backward seek",
+    "release": "1.200.00",
+    "member": "music.ap",
+    "offset": "0xab2c",
+    "before": "1db2",
+    "after": "b217"
+  },
+  {
+    "fix": "Reject favorite position zero",
+    "release": "1.200.00",
+    "member": "music.ap",
+    "offset": "0x154f0",
+    "before": "4467a7d9c8d94cc9",
+    "after": "0824a7d9c8d98cc9"
+  },
+  {
+    "fix": "Reject favorite position zero",
+    "release": "1.200.00",
+    "member": "mainmenu.ap",
+    "offset": "0x93f0",
+    "before": "4467a7d9c8d94cc9",
+    "after": "0824a7d9c8d98cc9"
+  },
+  {
+    "fix": "Initialize decoder write callback",
+    "release": "1.200.00",
+    "member": "mengine.ap",
+    "offset": "0x3332",
+    "before": "26b246d9",
+    "after": "68100065"
+  },
+  {
+    "fix": "Initialize decoder write callback",
+    "release": "1.200.00",
+    "member": "mengine.ap",
+    "offset": "0x3404",
+    "before": "000000000000000000000000000000000000000000000000",
+    "after": "04b246d904b247d99417006aff4aa0e8b51ac1bf0f111560"
+  },
+  {
+    "fix": "Guard ASRC coefficient loading",
+    "release": "1.201.00",
+    "member": "mengine.ap",
+    "offset": "0x30ae",
+    "before": "08b308b240a2",
+    "after": "032207b34467"
+  },
+  {
+    "fix": "Guard ASRC coefficient loading",
+    "release": "1.201.00",
+    "member": "mengine.ap",
+    "offset": "0x30fe",
+    "before": "06b3006a40c3",
+    "after": "022205b380c3"
+  },
+  {
+    "fix": "Guard ASRC coefficient loading",
+    "release": "1.201.00",
+    "member": "mengine.ap",
+    "offset": "0x3160",
+    "before": "d6640401",
+    "after": "5d110065"
+  },
+  {
+    "fix": "Guard ASRC coefficient loading",
+    "release": "1.201.00",
+    "member": "mengine.ap",
+    "offset": "0x341c",
+    "before": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "after": "f36424675167065a442228b4006d006e0d6f27b2c0ea02673c2071674367443269e2483269e2403244329067006dc2670f6f1fb2c0ea014a26221fb4609c06f0016a4bea6cea40dc90671cb501f6006e116f17b2c0ea01f6006b6eea142a906717b501f20c6e116f11b2c0ea01f20c6b6eea092a9067006d006e0e6f0cb2c0ea082a016a0d109067006d006e0e6f08b2c0ea006c006d006e056f06b2c0ea006a91677364a0e80065f8101560c91cc1bfb51cc1bf441000c000e0c0bf00f0c0bf"
+  }
+]
