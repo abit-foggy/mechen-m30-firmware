@@ -160,11 +160,17 @@ To shuffle every song on the card:
 
 ## Recover a player
 
-If a patched build stops the player from booting, try these options in order:
+If the player can still run an update from the SD card, reinstall the stock `MECHEN_M30.HEX` using the [normal update procedure](#install-the-firmware-on-the-mechen-m30). If it hangs at the boot logo or shows a blank screen, use USB recovery (ADFU) with the MECHEN Windows upgrade tool and the stock M30 **`.fw`** recovery image.
 
-1. If the player still reads the card, flash the stock `MECHEN_M30.HEX` the same way you installed the patched one.
-1. Use the MECHEN Windows upgrade tool with the stock `.fw` file. The chip's mask ROM has a USB recovery mode (ADFU). It shows up as USB ID `10d6:10d6` when you hold a boot key while you plug the player in. The boot key for the M30 isn't known.
-1. On Linux, try [actions_flash](https://github.com/ilyakurdyukov/actions_flash). It supports the ATJ2127 but isn't complete.
+**The M30 boot key is the Menu button.** With the player powered off and unplugged, hold **Menu** while connecting the USB cable. On a Linux host, run `lsusb -d 10d6:10d6`. A line containing `10d6:10d6 Actions Semiconductor` confirms the player entered recovery mode.
+
+### Tested recovery on a Linux host
+
+1. Start a **Windows 11** VM in **VMware Workstation**. Install **VMware Tools inside Windows** before flashing. In the reported M30 recovery, the upgrade repeatedly failed at **60%** without VMware Tools and completed after Tools was installed.
+2. Put the M30 into USB recovery using **Menu** as described above. In VMware Workstation, connect the **Actions Semiconductor** USB device to the Windows guest through the removable devices menu.
+3. Inside Windows, open the **MECHEN upgrade tool**, select the stock M30 **`.fw`** image, and start the upgrade. Keep the player connected to the guest until the tool reports completion.
+
+For Linux-side diagnostics, `actions_dump --id 10d6:10d6 adfu_info` from [actions_flash](https://github.com/ilyakurdyukov/actions_flash) can confirm that the player responds in ADFU mode. The full recovery verified above used the MECHEN tool inside Windows 11.
 
 ## Frequently asked questions
 
